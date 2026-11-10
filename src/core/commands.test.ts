@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { inflateRawSync } from 'node:zlib';
 import {
-  buildCommands, datapackFiles, FILL_LIMIT, functionFolder, mergeBoxes, packMeta, splitBox, type Box, type CommandSet,
+  buildCommands, commandBlockOutputRule, commandBlockParts, commandBlockPlacement, COMMAND_BLOCK_LIMIT, coversCommandBlock,
+  datapackFiles, FILL_LIMIT, functionFolder, mergeBoxes, packMeta, splitBox, type Box, type CommandSet,
 } from './commands';
 import { createGrid } from './grid';
 import { AIR, type BlockInfo } from './types';
@@ -143,6 +144,70 @@ describe('datapackFiles', () => {
     expect(functionFolder([48, 0])).toBe('function');
     expect(functionFolder([26, 0])).toBe('functions');
     expect(packMeta(null, 'x').pack).toHaveProperty('min_format');
+  });
+});
+
+describe('commandBlockParts', () => {
+  /** Minecart commands in a part, unescaped, in order. */
+  const cartsOf = (part: string) =>
+    [...part.matchAll(/Command:'((?:[^'\\]|\\.)*)'/g)].map((m) => m[1].replace(/\\(.)/g, '$1'));
+  /** Brackets balance outside quoted strings. */
+  const balanced = (s: string) => {
+    const stack: string[] = [];
+    let quote: string | null = null;
+    for (let i = 0; i < s.length; i++) {
+      const ch = s[i];
+      if (quote) {
+        if (ch === '\\') i++;
+        else if (ch === quote) quote = null;
+      } else if (ch === "'" || ch === '"') quote = ch;
+      else if (ch === '{' || ch === '[') stack.push(ch);
+      else if (ch === '}' || ch === ']') {
+        if (stack.pop() !== (ch === '}' ? '{' : '[')) return false;
+      }
+    }
+    return stack.length === 0 && quote === null;
+  };
+  const commands = Array.from({ length: 900 }, (_, i) => `fill ~${i} ~-2 ~ ~${i} ~1 ~3 white_glazed_terracotta[facing=south]`);
+
+  it('splits commands into parts that fit a command block, in order', () => {
+    const parts = commandBlockParts(commands);
+    expect(parts.length).toBeGreaterThan(1);
+    const all: string[] = [];
+    for (const p of parts) {
+      expect(p.length).toBeLessThanOrEqual(COMMAND_BLOCK_LIMIT);
+      expect(p.startsWith('summon falling_block ~ ~1 ~ {BlockState:{Name:redstone_block}')).toBe(true);
+      expect(balanced(p)).toBe(true);
+      const carts = cartsOf(p);
+      // Every part ends by clearing the rail (keeping the command block) and removing the minecarts.
+      expect(carts.slice(-2)).toEqual([
+        'setblock ~ ~1 ~ command_block{auto:1,Command:"fill ~ ~ ~ ~ ~-2 ~ air"}',
+        'kill @e[type=command_block_minecart,distance=..1]',
+      ]);
+      all.push(...carts.slice(0, -2));
+    }
+    expect(all).toEqual(commands);
+  });
+
+  it('escapes quotes and backslashes', () => {
+    const [part] = commandBlockParts([`say it's a \\ test`]);
+    expect(balanced(part)).toBe(true);
+    expect(cartsOf(part)[0]).toBe(`say it's a \\ test`);
+  });
+
+  it('counts relative positions from the command block, not the minecarts', () => {
+    expect(commandBlockPlacement({ relative: true, x: 1, y: 0, z: 0 })).toEqual({ relative: true, x: 1, y: -2, z: 0 });
+    expect(commandBlockPlacement({ relative: false, x: 1, y: 64, z: 0 })).toEqual({ relative: false, x: 1, y: 64, z: 0 });
+    const size = { width: 4, height: 2, length: 3 };
+    expect(coversCommandBlock({ relative: true, x: 0, y: 0, z: 0 }, size)).toBe(true);
+    expect(coversCommandBlock({ relative: true, x: 1, y: 0, z: 0 }, size)).toBe(false);
+    expect(coversCommandBlock({ relative: true, x: -3, y: 4, z: -2 }, size)).toBe(false);
+    expect(coversCommandBlock({ relative: true, x: -3, y: 3, z: -2 }, size)).toBe(true);
+  });
+
+  it('names the chat output game rule for the version', () => {
+    expect(commandBlockOutputRule([121, 0])).toBe('command_block_output');
+    expect(commandBlockOutputRule([88, 0])).toBe('commandBlockOutput');
   });
 });
 

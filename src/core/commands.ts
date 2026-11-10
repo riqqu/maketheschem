@@ -221,3 +221,64 @@ export function datapackFiles(set: CommandSet, o: DatapackOptions): PackFile[] {
   }
   return files;
 }
+
+// ---- command block ------------------------------------------------------------------------------
+
+/** Longest command a command block accepts. */
+export const COMMAND_BLOCK_LIMIT = 32500;
+/** Blocks above the command block that the one-command contraption uses (redstone block, rail, cleanup block). */
+export const COMMAND_BLOCK_HEADROOM = 3;
+
+/**
+ * Command block minecarts run their command where they stand: on the rail two blocks above the command block.
+ * Relative placements are shifted so `~` still counts from the command block itself.
+ */
+export const commandBlockPlacement = (p: Placement): Placement => (p.relative ? { ...p, y: p.y - 2 } : p);
+
+/** True if a relative build would cover the command block or the 3 blocks above it that the contraption needs. */
+export function coversCommandBlock(p: Placement, size: { width: number; height: number; length: number }): boolean {
+  if (!p.relative) return false;
+  const inside = (o: number, n: number, lo: number, hi: number) => o <= hi && o + n - 1 >= lo;
+  return inside(p.x, size.width, 0, 0) && inside(p.z, size.length, 0, 0) && inside(p.y, size.height, 0, COMMAND_BLOCK_HEADROOM);
+}
+
+/** Single-quoted SNBT string. */
+const snbtString = (s: string) => `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+const cart = (command: string) => `{id:command_block_minecart,Command:${snbtString(command)}}`;
+
+/**
+ * Packs commands into as few single commands as fit a command block (the "one command" technique from the
+ * Minecraft Wiki's falling block tutorial). Each part summons a falling redstone block, then an activator rail on
+ * top of it carrying one command block minecart per command; the minecarts run in order on the powered rail. The
+ * last two place a command block that clears the rail and redstone block (keeping the command block, so the next
+ * part can be pasted into it) and remove the minecarts.
+ */
+export function commandBlockParts(commands: string[], limit = COMMAND_BLOCK_LIMIT): string[] {
+  const head = 'summon falling_block ~ ~1 ~ {BlockState:{Name:redstone_block},Passengers:[{id:armor_stand,Health:0,Passengers:[' +
+    '{id:falling_block,BlockState:{Name:activator_rail},Passengers:[';
+  const tail = [
+    cart('setblock ~ ~1 ~ command_block{auto:1,Command:"fill ~ ~ ~ ~ ~-2 ~ air"}'),
+    cart('kill @e[type=command_block_minecart,distance=..1]'),
+  ].join(',') + ']}]}]}';
+  const room = limit - head.length - tail.length - 1;
+  const parts: string[] = [];
+  let carts: string[] = [];
+  let used = 0;
+  for (const c of commands) {
+    const m = cart(c);
+    if (m.length + 1 > room) throw new Error(`A command is too long for a command block: ${c.slice(0, 60)}…`);
+    if (used + m.length + 1 > room) {
+      parts.push(head + carts.join(',') + ',' + tail);
+      carts = [];
+      used = 0;
+    }
+    carts.push(m);
+    used += m.length + 1;
+  }
+  if (carts.length) parts.push(head + carts.join(',') + ',' + tail);
+  return parts;
+}
+
+/** Game rule that stops command blocks from posting each result in chat (renamed in 1.21.11, data pack format 94). */
+export const commandBlockOutputRule = (format: readonly [number, number] | null | undefined) =>
+  (format?.[0] ?? 94) >= 94 ? 'command_block_output' : 'commandBlockOutput';

@@ -73,17 +73,22 @@ menu (`M`). Floors read with north at the top.
 
 **Commands (no mods).** Pick **Commands** as the format. Neighbouring blocks of the same kind are merged into
 `/fill` boxes (each at most 32,768 blocks, the game's default limit), and single blocks become `/setblock`.
-- **Position**: **Where you stand** writes relative coordinates (`~`). The x/y/z fields move the build's bottom
-  north-west corner away from your feet (x east, y up, z south); 0 0 0 puts it where you stand, like `//paste`.
-  **Coordinates** writes fixed world coordinates instead.
+- **Run with: Command block** (no files needed): **Make command block commands** packs everything into as few single
+  commands as fit a command block (32,500 characters each), listed as Part 1, Part 2, … with a **Copy** button each.
+  Each part is one `/summon` of a falling redstone block and activator rail carrying command block minecarts, one
+  per command (the "one command" technique from the Minecraft Wiki). The minecarts run their commands, then the
+  rail and redstone block clear themselves, leaving the command block for the next part. Place the command block
+  outside the build with 3 free blocks above it and a button on its side, then for each part: paste, **Done**,
+  press the button. Paste one part at a time; a command block can't take several commands.
+- **Run with: Data pack**: **Download data pack** gives `<name>_datapack.zip`. Put it in the world's `datapacks` folder
+  (Singleplayer → select the world → Edit → Open World Folder), run `/reload`, then `/function mts:<name>`. Builds
+  with more than 20,000 commands run in parts, one per tick (a function stops after 65,536 commands). For relative
+  placement a marker entity remembers where you ran it. The pack targets the data pack format read from your jar.
+- **Position**: relative (`~`) counts from the command block, or from where you stand for the data pack. The x/y/z
+  fields move the build's bottom north-west corner (x east, y up, z south). **Coordinates** writes fixed world
+  coordinates instead.
 - **Clear the area first** fills the build's box with air before placing blocks, so the build is clean even over
   terrain or an earlier copy.
-- **Download data pack** gives `<name>_datapack.zip`. Put it in the world's `datapacks` folder (Singleplayer → select
-  the world → Edit → Open World Folder), run `/reload`, then `/function mts:<name>`. Builds with more than 20,000
-  commands run in parts, one per tick (a function stops after 65,536 commands). For relative placement a marker
-  entity remembers where you ran it. The pack targets the data pack format read from your Minecraft jar.
-- **Copy commands** copies them one per line with a leading `/`. This is only practical for small builds, since chat
-  and command blocks take one command at a time.
 
 Opening a `.schem` works for one-block-thick builds (a wall or a floor) in the Sponge format written by WorldEdit 7+
 and this app. Blocks that aren't in the usable block list become air (you'll see how many).

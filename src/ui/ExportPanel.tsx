@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
-import { buildCommands, datapackFiles, functionCommand, PART_SIZE, type CommandSet, type Placement } from '../core/commands';
+import {
+  buildCommands, commandBlockOutputRule, commandBlockParts, commandBlockPlacement, coversCommandBlock, datapackFiles, functionCommand,
+  PART_SIZE, type CommandSet, type Placement,
+} from '../core/commands';
 import { BLOCKS, blockData } from '../data';
 import type { Grid } from '../core/grid';
 import type { Facing } from '../core/layout';
@@ -22,17 +25,23 @@ const LS_FORMAT = 'mts.exportFormat';
 
 const FORMAT_HINT: Record<Format, string> = { schem: 'WorldEdit / FAWE', litematic: 'Litematica mod', commands: 'vanilla, no mods' };
 
-/** Where /fill commands put the build, remembered between sessions. */
+/** How /fill commands are run and where they put the build, remembered between sessions. */
 interface CommandSettings {
+  /** A data pack function, or single commands pasted into a command block. */
+  runWith: 'block' | 'datapack';
   relative: boolean;
-  /** Offsets from the player (relative). */
+  /** Offsets from the player or command block (relative). */
   rel: { x: number; y: number; z: number };
   /** World coordinates (absolute). */
   abs: { x: number; y: number; z: number };
   clear: boolean;
 }
 const LS_COMMANDS = 'mts.commands.v1';
-const DEFAULT_COMMANDS: CommandSettings = { relative: true, rel: { x: 0, y: 0, z: 0 }, abs: { x: 0, y: 64, z: 0 }, clear: false };
+const DEFAULT_COMMANDS: CommandSettings = {
+  runWith: 'block', relative: true, rel: { x: 1, y: 0, z: 0 }, abs: { x: 0, y: 64, z: 0 }, clear: false,
+};
+/** More command block pastes than this and the data pack is suggested instead. */
+const MANY_PARTS = 10;
 
 function loadCommandSettings(): CommandSettings {
   const r = loadJSON<Partial<CommandSettings> | null>(LS_COMMANDS, null) ?? {};
@@ -42,6 +51,7 @@ function loadCommandSettings(): CommandSettings {
     return { x: n('x'), y: n('y'), z: n('z') };
   };
   return {
+    runWith: r.runWith === 'datapack' || r.runWith === 'block' ? r.runWith : DEFAULT_COMMANDS.runWith,
     relative: typeof r.relative === 'boolean' ? r.relative : DEFAULT_COMMANDS.relative,
     rel: xyz(r.rel, DEFAULT_COMMANDS.rel),
     abs: xyz(r.abs, DEFAULT_COMMANDS.abs),
@@ -113,6 +123,9 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
     });
   /** Summary of the last generated commands; cleared when the build changes. */
   const [cmdInfo, setCmdInfo] = useState<string | null>(null);
+  /** Command block commands made last, and which of them were copied. */
+  const [parts, setParts] = useState<string[] | null>(null);
+  const [copied, setCopied] = useState<ReadonlySet<number>>(new Set());
   const fileName = sanitizeName(name);
   const wallFacing: Facing = art && orientation === 'wall' ? facing : 'south';
   const dims = volume
@@ -121,7 +134,10 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
       ? schemDimensions(grid.width, grid.height, orientation, wallFacing)
       : null;
 
-  useEffect(() => setCmdInfo(null), [grid, volume, blockCount, orientation, wallFacing]);
+  useEffect(() => {
+    setCmdInfo(null);
+    setParts(null);
+  }, [grid, volume, blockCount, orientation, wallFacing, cmd]);
 
   const run = async (task: () => Promise<void>) => {
     setBusy(true);
@@ -141,17 +157,16 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
   };
 
   const placement: Placement = cmd.relative ? { relative: true, ...cmd.rel } : { relative: false, ...cmd.abs };
-  const makeCommands = (): CommandSet | null => {
+  const byBlock = cmd.runWith === 'block';
+  const blocksCommandBlock = format === 'commands' && byBlock && !!dims && coversCommandBlock(placement, dims);
+  const commandSummary = (set: CommandSet) =>
+    `${set.commands.length.toLocaleString()} commands: ${set.fills.toLocaleString()} fill, ${set.setblocks.toLocaleString()} setblock` +
+    (set.clears ? `, ${set.clears.toLocaleString()} to clear` : '');
+  const makeCommands = (forBlock: boolean): CommandSet | null => {
     const input = exportInput();
     if (!input) return null;
-    const set = buildCommands(input, { placement, clear: cmd.clear });
-    const parts = Math.ceil(set.commands.length / PART_SIZE);
-    setCmdInfo(
-      `${set.commands.length.toLocaleString()} commands: ${set.fills.toLocaleString()} fill, ${set.setblocks.toLocaleString()} setblock` +
-        (set.clears ? `, ${set.clears.toLocaleString()} to clear` : '') +
-        (parts > 1 ? ` · built over ${parts} ticks` : ''),
-    );
-    return set;
+    // Command block minecarts run two blocks above the command block: shift relative builds to make up for it.
+    return buildCommands(input, { placement: forBlock ? commandBlockPlacement(placement) : placement, clear: cmd.clear });
   };
 
   const download = () =>
@@ -159,8 +174,10 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
       const input = exportInput();
       if (!input) return;
       if (format === 'commands') {
-        const set = makeCommands();
+        const set = makeCommands(false);
         if (!set) return;
+        const ticks = Math.ceil(set.commands.length / PART_SIZE);
+        setCmdInfo(commandSummary(set) + (ticks > 1 ? ` · built over ${ticks} ticks` : ''));
         const enc = new TextEncoder();
         const files = datapackFiles(set, { name: fileName, packFormat: blockData.dataPackFormat });
         const bytes = await zip(files.map((f) => ({ path: f.path, data: enc.encode(f.text) })));
@@ -171,13 +188,21 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
       downloadBlob(new Blob([bytes as BlobPart], { type: 'application/octet-stream' }), `${fileName}.${format}`);
     });
 
-  const copyCommands = () =>
+  const makeParts = () =>
     run(async () => {
-      const set = makeCommands();
+      const set = makeCommands(true);
       if (!set) return;
-      // A leading slash so any single line can go straight into chat or a command block.
-      await navigator.clipboard.writeText(set.commands.map((c) => `/${c}`).join('\n'));
-      setCmdInfo((i) => `Copied. ${i ?? ''}`);
+      const made = commandBlockParts(set.commands);
+      setParts(made);
+      setCopied(new Set());
+      setCmdInfo(`${commandSummary(set)} · ${made.length === 1 ? 'one command block paste' : `${made.length} command block pastes`}`);
+    });
+
+  const copyPart = (i: number) =>
+    run(async () => {
+      if (!parts) return;
+      await navigator.clipboard.writeText(parts[i]);
+      setCopied((c) => new Set(c).add(i));
     });
 
   const downloadPng = () =>
@@ -225,10 +250,21 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
       {format === 'commands' && (
         <>
           <div className="field">
+            <span className="field-label">Run with</span>
+            <div className="segmented small" role="group" aria-label="Run with">
+              <button type="button" className={byBlock ? 'is-active' : ''} onClick={() => setCmd({ runWith: 'block' })} title="Paste one command into a command block and press a button; big builds take several pastes">
+                Command block
+              </button>
+              <button type="button" className={!byBlock ? 'is-active' : ''} onClick={() => setCmd({ runWith: 'datapack' })} title="A data pack for the world folder: any size in one go">
+                Data pack
+              </button>
+            </div>
+          </div>
+          <div className="field">
             <span className="field-label">Position</span>
             <div className="segmented small" role="group" aria-label="Position">
-              <button type="button" className={cmd.relative ? 'is-active' : ''} onClick={() => setCmd({ relative: true })} title="Relative coordinates (~): builds wherever you run it">
-                Where you stand
+              <button type="button" className={cmd.relative ? 'is-active' : ''} onClick={() => setCmd({ relative: true })} title="Relative coordinates (~)">
+                {byBlock ? 'From the command block' : 'Where you stand'}
               </button>
               <button type="button" className={!cmd.relative ? 'is-active' : ''} onClick={() => setCmd({ relative: false })} title="Fixed world coordinates">
                 Coordinates
@@ -246,9 +282,14 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
             </div>
             <p className="small muted">
               {cmd.relative
-                ? `Where the ${corner} goes, counted from your feet. 0 0 0 puts it where you stand, like //paste.`
+                ? `Where the ${corner} goes, counted from ${byBlock ? 'the command block' : 'your feet (0 0 0 is where you stand, like //paste)'}.`
                 : `World coordinates of the ${corner} (F3 shows yours).`}
             </p>
+            {blocksCommandBlock && (
+              <p className="note warn">
+                The build would cover the command block or the 3 blocks above it, which the commands need. Move it, e.g. 1 east.
+              </p>
+            )}
           </div>
           <label className="check-row">
             <input type="checkbox" checked={cmd.clear} onChange={(e) => setCmd({ clear: e.target.checked })} />
@@ -277,15 +318,37 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
           version {blockData.dataVersion}
         </p>
       )}
-      <button type="button" className="btn primary wide" onClick={download} disabled={!ready || blockCount === 0 || busy}>
-        <Icon name="download" /> {busy ? 'Building…' : format === 'commands' ? 'Download data pack' : `Download .${format}`}
-      </button>
-      {format === 'commands' && (
+      {format === 'commands' && byBlock ? (
+        <button type="button" className="btn primary wide" onClick={makeParts} disabled={!ready || blockCount === 0 || busy || blocksCommandBlock}>
+          <Icon name="copy" /> {busy ? 'Building…' : 'Make command block commands'}
+        </button>
+      ) : (
+        <button type="button" className="btn primary wide" onClick={download} disabled={!ready || blockCount === 0 || busy}>
+          <Icon name="download" /> {busy ? 'Building…' : format === 'commands' ? 'Download data pack' : `Download .${format}`}
+        </button>
+      )}
+      {format === 'commands' && cmdInfo && <p className="small muted num">{cmdInfo}</p>}
+      {format === 'commands' && byBlock && parts && (
         <>
-          <button type="button" className="btn small" onClick={copyCommands} disabled={!ready || blockCount === 0 || busy} title="One command per line, each starting with /">
-            <Icon name="copy" size={15} /> Copy commands
-          </button>
-          {cmdInfo && <p className="small muted num">{cmdInfo}</p>}
+          {parts.length > MANY_PARTS && (
+            <p className="note warn">
+              That’s {parts.length} pastes. A data pack builds it in one go if you can reach the world folder.
+            </p>
+          )}
+          <ol className="cmd-parts">
+            {parts.map((p, i) => (
+              <li key={i} className={copied.has(i) ? 'is-copied' : ''}>
+                <span className="cmd-part-name">
+                  Part {i + 1}
+                  {parts.length > 1 ? ` of ${parts.length}` : ''}
+                </span>
+                <span className="muted small num">{p.length.toLocaleString()} characters</span>
+                <button type="button" className="btn small" onClick={() => copyPart(i)} title="Copy this command, then paste it into the command block">
+                  <Icon name="copy" size={14} /> {copied.has(i) ? 'Copied' : 'Copy'}
+                </button>
+              </li>
+            ))}
+          </ol>
         </>
       )}
       <button
@@ -304,7 +367,25 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
       {error && <p className="note warn">{error}</p>}
       <details className="howto">
         <summary>How to use it in Minecraft</summary>
-        {format === 'commands' ? (
+        {format === 'commands' && byBlock ? (
+          <>
+            <ol>
+              <li>
+                Get a command block with <code>/give @s command_block</code> and place it outside the build area, with 3 empty blocks above
+                it and a button on its side (not on top).
+              </li>
+              <li>
+                Copy part 1, open the command block, paste it with Ctrl+V, click <strong>Done</strong> and press the button. A rail with
+                minecarts appears on top, builds and removes itself.
+              </li>
+              <li>For each next part, paste it into the same command block and press the button again.</li>
+            </ol>
+            <p className="small muted">
+              Each part is one command (a command block takes up to 32,500 characters), so never paste several at once.{' '}
+              <code>/gamerule {commandBlockOutputRule(blockData.dataPackFormat)} false</code> stops the chat messages.
+            </p>
+          </>
+        ) : format === 'commands' ? (
           <>
             <ol>
               <li>
@@ -320,10 +401,7 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
                 {cmd.relative ? 'Stand where it should go' : 'Go near the build site so it’s loaded'} and run <code>{functionCommand(fileName)}</code>.
               </li>
             </ol>
-            <p className="small muted">
-              Big builds run in parts, one per tick. <strong>Copy commands</strong> is for small builds: chat and command blocks take one
-              command at a time.
-            </p>
+            <p className="small muted">Big builds run in parts, one per tick.</p>
           </>
         ) : format === 'schem' ? (
           <ol>
