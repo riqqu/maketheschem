@@ -19,7 +19,7 @@ const JAR = process.argv.slice(2).find((a) => !a.startsWith('--')) ?? process.en
 const TILE = 16;
 const ATLAS_COLUMNS = 32;
 /** Bump when blocks.json gains fields; ensure-blocks.mjs re-extracts older data. */
-export const FORMAT = 2;
+export const FORMAT = 3;
 
 // Properties pinned to one value so a block resolves to exactly one blockstate variant.
 const PINNED = { axis: 'y', snowy: 'false', facing: 'south' };
@@ -278,6 +278,14 @@ function resolveTagValues(files, tag, seen = new Set()) {
 
 // ---------------------------------------------------------------------------------------------
 
+/** [major, minor] data pack format from version.json (newer jars split it into major/minor). */
+function dataPackFormat(pv) {
+  if (typeof pv === 'number') return [pv, 0];
+  if (pv && Number.isInteger(pv.data_major)) return [pv.data_major, pv.data_minor ?? 0];
+  if (pv && Number.isInteger(pv.data)) return [pv.data, 0];
+  return null;
+}
+
 async function main() {
   if (!existsSync(JAR)) {
     console.error(`Minecraft jar not found: ${JAR}\nRun the game version once in the launcher, or pass a path: npm run extract -- <path to jar>`);
@@ -379,6 +387,7 @@ async function main() {
     format: FORMAT,
     minecraftVersion: version.name ?? version.id,
     dataVersion: version.world_version,
+    dataPackFormat: dataPackFormat(version.pack_version),
     tileSize: TILE,
     atlasColumns: ATLAS_COLUMNS,
     categories: CATEGORY_ORDER.filter((c) => accepted.some((b) => b.category === c)),

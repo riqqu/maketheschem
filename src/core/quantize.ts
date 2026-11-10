@@ -38,7 +38,7 @@ export const BAYER = (() => {
   return m;
 })();
 /** RGB offset range of the ordered pattern at full strength. */
-const ORDERED_SPREAD = 72;
+export const ORDERED_SPREAD = 72;
 
 /** Nearest-colour lookup in OKLab (plus each colour's penalty), cached per RGB value. */
 export function makeMatcher(palette: readonly PaletteColor[]) {

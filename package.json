@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Turn images into one-layer Minecraft pixel art and export Sponge v3 .schem files.",
+  "description": "Turn images into one-layer Minecraft pixel art, and 3D models into 3D builds, and export Sponge v3 .schem or .litematic files.",
   "scripts": {
     "extract": "node scripts/extract-blocks.mjs",
     "predev": "node scripts/ensure-blocks.mjs",
@@ -16,12 +16,14 @@
   },
   "dependencies": {
     "react": "^19.3.1",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "three": "0.186.1"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@types/three": "0.186.0",
     "@vitejs/plugin-react": "^6.3.0",
     "pngjs": "^7.0.0",
     "prismarine-nbt": "^2.8.0",

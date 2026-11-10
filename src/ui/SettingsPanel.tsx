@@ -158,8 +158,21 @@ const DITHER: { id: DitherMode; label: string; hint: string }[] = [
   { id: 'ordered', label: 'Pattern', hint: 'A regular checker-like pattern: tidier in game and easier to build by hand.' },
 ];
 
-/** How pixels are matched to blocks (only for images). */
-export function MatchingPanel({ settings: s, update }: { settings: ArtSettings; update: Update }) {
+/** The matching settings images and 3D models share. */
+export type MatchingSettings = Pick<ArtSettings, 'smoothness' | 'ditherStrength' | 'maxTypesOn' | 'maxTypes'> & { dither: DitherMode };
+
+/** How pixels (or model surfaces) are matched to blocks. `noDiffusion` hides error diffusion (3D models). */
+export function MatchingPanel<S extends MatchingSettings>({
+  settings: s,
+  update,
+  noDiffusion = false,
+}: {
+  settings: S;
+  update: (patch: Partial<S>) => void;
+  noDiffusion?: boolean;
+}) {
+  const set = (patch: Partial<MatchingSettings>) => update(patch as Partial<S>);
+  const dithers = noDiffusion ? DITHER.filter((d) => d.id !== 'diffusion') : DITHER;
   return (
     <>
       <div className="field">
@@ -173,7 +186,7 @@ export function MatchingPanel({ settings: s, update }: { settings: ArtSettings; 
           max={100}
           step={5}
           value={s.smoothness}
-          onChange={(e) => update({ smoothness: Number(e.target.value) })}
+          onChange={(e) => set({ smoothness: Number(e.target.value) })}
           aria-label="Prefer smooth textures"
         />
         <p className="small muted">
@@ -185,8 +198,8 @@ export function MatchingPanel({ settings: s, update }: { settings: ArtSettings; 
       <div className="field">
         <span className="field-label">Dithering</span>
         <div className="segmented small" role="group" aria-label="Dithering">
-          {DITHER.map((d) => (
-            <button key={d.id} type="button" className={s.dither === d.id ? 'is-active' : ''} onClick={() => update({ dither: d.id })} title={d.hint}>
+          {dithers.map((d) => (
+            <button key={d.id} type="button" className={s.dither === d.id ? 'is-active' : ''} onClick={() => set({ dither: d.id })} title={d.hint}>
               {d.label}
             </button>
           ))}
@@ -200,7 +213,7 @@ export function MatchingPanel({ settings: s, update }: { settings: ArtSettings; 
               max={100}
               step={5}
               value={Math.round(s.ditherStrength * 100)}
-              onChange={(e) => update({ ditherStrength: Number(e.target.value) / 100 })}
+              onChange={(e) => set({ ditherStrength: Number(e.target.value) / 100 })}
               aria-label="Dithering strength"
             />
             <span className="num small">{Math.round(s.ditherStrength * 100)}%</span>
@@ -211,7 +224,7 @@ export function MatchingPanel({ settings: s, update }: { settings: ArtSettings; 
 
       <div className="field">
         <label className="check-row">
-          <input type="checkbox" checked={s.maxTypesOn} onChange={(e) => update({ maxTypesOn: e.target.checked })} />
+          <input type="checkbox" checked={s.maxTypesOn} onChange={(e) => set({ maxTypesOn: e.target.checked })} />
           <span>Limit block types</span>
           <span className="muted small">fewer blocks to collect</span>
         </label>
@@ -223,7 +236,7 @@ export function MatchingPanel({ settings: s, update }: { settings: ArtSettings; 
               min={MAX_TYPES_MIN}
               max={MAX_TYPES_MAX}
               value={s.maxTypes}
-              onChange={(e) => update({ maxTypes: Number(e.target.value) })}
+              onChange={(e) => set({ maxTypes: Number(e.target.value) })}
               aria-label="Maximum block types"
             />
             <span className="num small">{s.maxTypes}</span>

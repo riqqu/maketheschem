@@ -1,4 +1,5 @@
 import { AIR } from './types';
+import { countCells } from './volume';
 
 /** Row-major block grid as seen in the editor: (0,0) is the top-left cell. */
 export interface Grid {
@@ -179,7 +180,5 @@ export function replaceAll(grid: Grid, history: History, from: number, to: numbe
 
 /** Block value -> number of cells, air excluded. */
 export function countBlocks(grid: Grid): Map<number, number> {
-  const counts = new Map<number, number>();
-  for (const v of grid.cells) if (v !== AIR) counts.set(v, (counts.get(v) ?? 0) + 1);
-  return counts;
+  return countCells(grid.cells);
 }

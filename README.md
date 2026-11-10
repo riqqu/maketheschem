@@ -1,7 +1,8 @@
 # Make the Schem
 
 Turn an image into one-layer Minecraft pixel art, as a wall or a floor, then edit it block by block and export a
-Sponge v3 `.schem` for WorldEdit or FAWE. Everything runs locally in your browser.
+Sponge v3 `.schem` for WorldEdit or FAWE. Or turn a 3D model into a full 3D build. Everything runs locally in your
+browser.
 
 ## Run
 
@@ -55,6 +56,8 @@ Other Minecraft versions: `npm run extract -- "<path to version jar>"` (add `--l
    you paint. `Esc` clears it.
 7. Check the **Materials** tab for a survival shopping list, then export:
    - **.schem** for WorldEdit / FAWE, or **.litematic** for Litematica (in-game hologram and material list);
+   - **Commands**: a data pack of vanilla `/fill` and `/setblock` commands that builds it instantly in a creative
+     world, no mods (see below);
    - **Wall faces**: the side the picture is seen from (south, west, north or east), so no `//rotate` is needed;
    - **Download preview .png**: an image of the art with textures, for sharing.
 
@@ -68,8 +71,49 @@ In game: put a `.schem` in `plugins/WorldEdit/schematics/` (server) or `config/w
 `//schem load <name>` and `//paste -a`. Put a `.litematic` in `.minecraft/schematics/` and load it from Litematica's
 menu (`M`). Floors read with north at the top.
 
+**Commands (no mods).** Pick **Commands** as the format. Neighbouring blocks of the same kind are merged into
+`/fill` boxes (each at most 32,768 blocks, the game's default limit), and single blocks become `/setblock`.
+- **Position**: **Where you stand** writes relative coordinates (`~`). The x/y/z fields move the build's bottom
+  north-west corner away from your feet (x east, y up, z south); 0 0 0 puts it where you stand, like `//paste`.
+  **Coordinates** writes fixed world coordinates instead.
+- **Clear the area first** fills the build's box with air before placing blocks, so the build is clean even over
+  terrain or an earlier copy.
+- **Download data pack** gives `<name>_datapack.zip`. Put it in the world's `datapacks` folder (Singleplayer → select
+  the world → Edit → Open World Folder), run `/reload`, then `/function mts:<name>`. Builds with more than 20,000
+  commands run in parts, one per tick (a function stops after 65,536 commands). For relative placement a marker
+  entity remembers where you ran it. The pack targets the data pack format read from your Minecraft jar.
+- **Copy commands** copies them one per line with a leading `/`. This is only practical for small builds, since chat
+  and command blocks take one command at a time.
+
 Opening a `.schem` works for one-block-thick builds (a wall or a floor) in the Sponge format written by WorldEdit 7+
 and this app. Blocks that aren't in the usable block list become air (you'll see how many).
+
+## 3D models
+
+Switch to **3D model** at the top, or just drop a `.glb`, `.gltf` or `.stl` file anywhere.
+
+1. **Size & orientation**
+   - **Longest side**: 4 to 256 blocks. The other sides keep the model's proportions; the result is shown as W × H × L.
+   - **Up axis**: glTF models are Y-up and STL models usually Z-up (picked automatically). Switch it if the model
+     lies on its back.
+   - **Turn**: quarter turns seen from above. The label says which way the model's front faces.
+   - **Inside**: **Hollow** builds a closed one-block shell (far fewer blocks). **Solid** also fills the inside with
+     the nearest surface block. Models with holes in their surface stay hollow.
+2. **Colours**: **Match model** uses the model's textures, vertex colours and material colours. Faces that point
+   up or down are matched with the blocks' top textures, the rest with their side textures. **One block** builds
+   everything from a single block, which is the default for STL files since they have no colours.
+   Transparent materials are skipped, and cut-out texture areas (leaves, fences) become air.
+3. **Matching** works as for images: smooth textures, **Pattern** dithering (laid on each surface) and **Limit block
+   types**. The **Blocks** tab chooses which blocks may be used.
+4. The preview can be turned (drag), panned (right-drag) and zoomed (wheel). Hover a block to see its position and
+   name. **Original model** shows the model itself at the same place for comparison.
+5. **Export** writes a 3D `.schem`, `.litematic` or **Commands** data pack, and a `.png` of the current view. Paste
+   it with the bottom north-west corner at your position (`//paste -a`), or run the data pack's function.
+
+Limits: only self-contained files are supported, so export a `.gltf` that uses separate `.bin` or image files as a
+single `.glb`. Draco-compressed meshes and KTX2 textures can't be read; meshopt compression works. Models are not
+kept in the History and can't be edited block by block yet. The 3D mode loads on first use, so the pixel-art editor
+stays light.
 
 ## Blocks
 
@@ -87,7 +131,8 @@ measures how noisy each texture is (for **Prefer smooth textures**). When that d
 ## Develop
 
 ```sh
-npm test           # core logic: matching, dithering, grid editing and shapes, NBT, .schem / .litematic, history encoding
+npm test           # core logic: matching, dithering, grid editing and shapes, NBT, .schem / .litematic, history encoding,
+                   # mesh voxelizing and 3D export, /fill commands and data packs
 npm run typecheck
 npm run build
 ```

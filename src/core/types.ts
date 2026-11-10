@@ -27,6 +27,8 @@ export interface BlockData {
   format?: number;
   minecraftVersion: string;
   dataVersion: number;
+  /** Data pack format [major, minor] of this Minecraft version (from format 3 of the extraction on). */
+  dataPackFormat?: readonly [number, number] | null;
   tileSize: number;
   atlasColumns: number;
   categories: string[];

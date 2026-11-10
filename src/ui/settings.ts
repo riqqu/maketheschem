@@ -105,7 +105,7 @@ export function loadLastSettings(): ArtSettings {
 export const LAST_SETTINGS_KEY = LS_SETTINGS;
 
 /** The blocks the generator may use, with the texture-noise penalty for this smoothness. */
-export function buildPalette(s: ArtSettings): PaletteColor[] {
+export function buildPalette(s: Pick<ArtSettings, 'enabled' | 'smoothness' | 'orientation'>): PaletteColor[] {
   const enabled = new Set(s.enabled);
   const smooth = s.smoothness / 100;
   return BLOCKS.flatMap((b, i) => {

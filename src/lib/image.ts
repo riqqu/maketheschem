@@ -43,8 +43,12 @@ export async function loadImageFile(file: File): Promise<LoadedImage> {
 
 export const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
 
+/** 3D models for the model mode (also no reliable MIME types). Kept here so checking a file doesn't load three.js. */
+export const MODEL_EXTENSIONS = ['.glb', '.gltf', '.stl'];
+export const isModelFile = (file: File) => /\.(glb|gltf|stl)$/i.test(file.name);
+
 /** Schematics have no registered MIME type, so go by extension. */
 export const isSchemFile = (file: File) => /\.schem$/i.test(file.name);
 
-/** For <input accept>. */
-export const ACCEPT_ATTR = [...ACCEPTED_TYPES, '.schem'].join(',');
+/** For <input accept>. 3D models are accepted too and switch the app to 3D model mode. */
+export const ACCEPT_ATTR = [...ACCEPTED_TYPES, '.schem', ...MODEL_EXTENSIONS].join(',');

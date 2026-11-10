@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ATLAS_URL, BLOCKS, blockData, blockIndexById } from '../data';
 import { countBlocks, createGrid, History, resizeGrid, type Grid } from '../core/grid';
 import { layout } from '../core/layout';
@@ -7,7 +7,7 @@ import { parseSchem, schemToGrid } from '../core/schemRead';
 import { decodeGrid } from '../core/serialize';
 import type { ClipTransform } from '../core/shapes';
 import { AIR, type Orientation } from '../core/types';
-import { ACCEPTED_TYPES, isSchemFile, loadImageFile, type LoadedImage } from '../lib/image';
+import { ACCEPTED_TYPES, isModelFile, isSchemFile, loadImageFile, type LoadedImage } from '../lib/image';
 import { loadJSON, saveJSON } from '../lib/storage';
 import type { BackgroundInfo } from '../worker/generate.worker';
 import { BlockPalettePanel } from './BlockPalettePanel';
@@ -25,6 +25,9 @@ import { clampSize, MAX_SIDE, MAX_WALL_HEIGHT, maxHeightFor, sizeFromHeight, siz
 import { ToolRail, Toolbar } from './Toolbar';
 import { useArtHistory } from './useArtHistory';
 import { useGenerator } from './useGenerator';
+
+// three.js is large: load the 3D model mode only when it's first used.
+const ModelWorkspace = lazy(() => import('./ModelWorkspace').then((m) => ({ default: m.ModelWorkspace })));
 
 function useLoadedImage(url: string | null) {
   const [img, setImg] = useState<HTMLImageElement | null>(null);
@@ -65,6 +68,8 @@ const TOOL_KEYS: Record<string, Tool> = {
   b: 'brush', e: 'eraser', i: 'picker', g: 'fill', r: 'replace', m: 'measure', l: 'line', u: 'rect', s: 'select',
 };
 const LS_RULERS = 'mts.rulers';
+const LS_MODE = 'mts.mode';
+type Mode = 'pixel' | 'model';
 const NO_SELECTION: SelectionInfo = { rect: null, floating: false, clipboard: false };
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
@@ -121,6 +126,16 @@ export default function App() {
   const [tab, setTab] = useState<'blocks' | 'materials' | 'history'>('blocks');
   const [name, setName] = useState('pixel_art');
   const [dragOver, setDragOver] = useState(false);
+  const [mode, setModeState] = useState<Mode>(() => (loadJSON<string>(LS_MODE, 'pixel') === 'model' ? 'model' : 'pixel'));
+  const setMode = (m: Mode) => {
+    setModeState(m);
+    saveJSON(LS_MODE, m);
+    if (m === 'pixel') setFitSignal((n) => n + 1); // the editor remounts
+  };
+  const [modelRequest, setModelRequest] = useState<{ file: File; n: number } | null>(null);
+  // Once opened, the model mode stays mounted (hidden) so the loaded model survives switching back and forth.
+  const modelUsed = useRef(false);
+  if (mode === 'model') modelUsed.current = true;
 
   const { orientation } = settings;
   const enabled = useMemo(() => new Set(settings.enabled), [settings.enabled]);
@@ -308,11 +323,21 @@ export default function App() {
   };
 
   const onFile = async (file: File) => {
-    if (isSchemFile(file)) return openSchemFile(file);
-    if (!ACCEPTED_TYPES.includes(file.type)) {
-      setImageError(`“${file.name}” is not a PNG, JPG, GIF or WebP image, or a .schem file.`);
+    if (isModelFile(file)) {
+      setMode('model');
+      setModelRequest((r) => ({ file, n: (r?.n ?? 0) + 1 }));
       return;
     }
+    if (isSchemFile(file)) {
+      setMode('pixel');
+      return openSchemFile(file);
+    }
+    if (!ACCEPTED_TYPES.includes(file.type)) {
+      setImageError(`“${file.name}” is not a PNG, JPG, GIF or WebP image, a .schem file or a 3D model (.glb, .gltf, .stl).`);
+      setMode('pixel');
+      return;
+    }
+    setMode('pixel');
     if (!confirmDiscard()) return;
     try {
       const img = await loadImageFile(file);
@@ -474,11 +499,14 @@ export default function App() {
   const transform = (op: ClipTransform) => editorRef.current?.transform(op);
 
   // Keyboard shortcuts (ignored while typing in a field). Selection keys live in the editor.
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyRef.current = (e: KeyboardEvent) => {
     // Ignore shortcuts only while typing; a focused checkbox, slider or button must not swallow Ctrl+Z.
     const typing = 'input:not([type=checkbox]):not([type=range]):not([type=radio]), textarea, select, [contenteditable]';
     if ((e.target as HTMLElement)?.closest?.(typing)) return;
+    if (modeRef.current === 'model') return; // the editor's shortcuts don't apply to the 3D view
     const k = e.key.toLowerCase();
     if ((e.ctrlKey || e.metaKey) && k === 'z') {
       e.preventDefault();
@@ -524,201 +552,221 @@ export default function App() {
           <Logo />
           <span>Make the Schem</span>
         </div>
-        <div className="muted small">
+        <div className="segmented small mode-switch" role="group" aria-label="Mode">
+          <button type="button" className={mode === 'pixel' ? 'is-active' : ''} onClick={() => setMode('pixel')} aria-pressed={mode === 'pixel'}>
+            <Icon name="image" size={15} /> Pixel art
+          </button>
+          <button type="button" className={mode === 'model' ? 'is-active' : ''} onClick={() => setMode('model')} aria-pressed={mode === 'model'}>
+            <Icon name="cube" size={15} /> 3D model
+          </button>
+        </div>
+        <div className="muted small topbar-info">
           Minecraft Java {blockData.minecraftVersion} · data version {blockData.dataVersion} · {BLOCKS.length} blocks
         </div>
       </header>
 
-      <aside className="sidebar left">
-        <Section title="Image">
-          <ImagePanel image={image} onFile={(f) => void onFile(f)} onBlank={() => void startBlank()} error={imageError} />
-        </Section>
-        <Section title="Size & style">
-          <SettingsPanel
-            settings={settings}
-            update={update}
-            setOrientation={setOrientation}
-            setWidth={setWidth}
-            setHeight={setHeight}
-            setLongest={setLongest}
-            bgInfo={settings.bgOn ? bgInfo : null}
-            hasImage={!!image}
-          />
-        </Section>
-        {image && (
-          <Section title="Matching">
-            <MatchingPanel settings={settings} update={update} />
-          </Section>
-        )}
-        <Section title="Export">
-          <ExportPanel
-            grid={grid}
-            orientation={orientation}
-            facing={settings.facing}
-            setFacing={(facing) => update({ facing })}
-            blockCount={blockCount}
-            name={name}
-            setName={setName}
-            atlas={{ atlas, tileSize: blockData.tileSize, atlasColumns: blockData.atlasColumns }}
-          />
-        </Section>
-      </aside>
-
-      <main className="workspace">
-        <Toolbar
-          tool={tool}
-          brushSize={brushSize}
-          setBrushSize={setBrushSize}
-          rectFilled={rectFilled}
-          setRectFilled={setRectFilled}
-          currentBlock={currentBlock}
-          recent={recent}
-          onSelectBlock={selectBlock}
-          orientation={orientation}
-          canUndo={history.canUndo || selection.floating}
-          canRedo={history.canRedo}
-          onUndo={undo}
-          onRedo={redo}
-          selection={selection}
-          onCopy={() => editorRef.current?.copy()}
-          onCut={() => editorRef.current?.cut()}
-          onPaste={() => editorRef.current?.paste()}
-          onDelete={() => editorRef.current?.deleteSelection()}
-          hasOverlay={!!image}
-          overlayOn={overlayOn}
-          setOverlayOn={setOverlayOn}
-          overlayOpacity={overlayOpacity}
-          setOverlayOpacity={setOverlayOpacity}
-          viewMode={viewMode}
-          setViewMode={setViewMode}
-          showGrid={showGrid}
-          setShowGrid={setShowGrid}
-          showRulers={showRulers}
-          setShowRulers={setShowRulers}
-          onFit={() => setFitSignal((n) => n + 1)}
-          disabled={!grid}
-        />
-        <div className="work-row">
-          <ToolRail tool={tool} setTool={setTool} selection={selection} onTransform={transform} disabled={!grid} />
-          <div className="stage">
-            {(stale || gen.error || notice) && (
-              <div className="stage-banners">
-                {notice && !stale && <div className="banner info">{notice}</div>}
-                {stale && (
-                  <div className="banner">
-                    <span>Settings changed since your manual edits.</span>
-                    <button type="button" className="btn small primary" onClick={() => runRef.current()}>
-                      Regenerate
-                    </button>
-                    <span className="muted small">discards edits</span>
-                  </div>
-                )}
-                {gen.error && <div className="banner">Generation failed: {gen.error}</div>}
-              </div>
+      {modelUsed.current && (
+        <Suspense fallback={mode === 'model' ? <div className="mode-loading muted">Loading the 3D model mode…</div> : null}>
+          <ModelWorkspace active={mode === 'model'} request={modelRequest} atlas={atlas} />
+        </Suspense>
+      )}
+      {mode === 'pixel' && (
+        <>
+          <aside className="sidebar left">
+            <Section title="Image">
+              <ImagePanel image={image} onFile={(f) => void onFile(f)} onBlank={() => void startBlank()} error={imageError} />
+            </Section>
+            <Section title="Size & style">
+              <SettingsPanel
+                settings={settings}
+                update={update}
+                setOrientation={setOrientation}
+                setWidth={setWidth}
+                setHeight={setHeight}
+                setLongest={setLongest}
+                bgInfo={settings.bgOn ? bgInfo : null}
+                hasImage={!!image}
+              />
+            </Section>
+            {image && (
+              <Section title="Matching">
+                <MatchingPanel settings={settings} update={update} />
+              </Section>
             )}
-            <Editor
-              grid={grid}
-              version={version}
-              blocks={BLOCKS}
-              orientation={orientation}
-              atlas={atlas}
-              tileSize={blockData.tileSize}
-              atlasColumns={blockData.atlasColumns}
-              viewMode={viewMode}
-              showGrid={showGrid}
-              showRulers={showRulers}
+            <Section title="Export">
+              <ExportPanel
+                target={{
+                  kind: 'art',
+                  grid,
+                  orientation,
+                  facing: settings.facing,
+                  setFacing: (facing) => update({ facing }),
+                  atlas: { atlas, tileSize: blockData.tileSize, atlasColumns: blockData.atlasColumns },
+                }}
+                blockCount={blockCount}
+                name={name}
+                setName={setName}
+              />
+            </Section>
+          </aside>
+
+          <main className="workspace">
+            <Toolbar
               tool={tool}
               brushSize={brushSize}
+              setBrushSize={setBrushSize}
               rectFilled={rectFilled}
+              setRectFilled={setRectFilled}
               currentBlock={currentBlock}
-              history={history}
-              fitSignal={fitSignal}
-              overlay={overlayOn ? overlayImg : null}
+              recent={recent}
+              onSelectBlock={selectBlock}
+              orientation={orientation}
+              canUndo={history.canUndo || selection.floating}
+              canRedo={history.canRedo}
+              onUndo={undo}
+              onRedo={redo}
+              selection={selection}
+              onCopy={() => editorRef.current?.copy()}
+              onCut={() => editorRef.current?.cut()}
+              onPaste={() => editorRef.current?.paste()}
+              onDelete={() => editorRef.current?.deleteSelection()}
+              hasOverlay={!!image}
+              overlayOn={overlayOn}
+              setOverlayOn={setOverlayOn}
               overlayOpacity={overlayOpacity}
-              handleRef={editorRef}
-              onEdit={onEdit}
-              onPick={onPick}
-              onHover={setHover}
-              onZoom={setZoom}
-              onMeasure={setMeasurement}
-              onSelection={setSelection}
-              onToolChange={setTool}
+              setOverlayOpacity={setOverlayOpacity}
+              viewMode={viewMode}
+              setViewMode={setViewMode}
+              showGrid={showGrid}
+              setShowGrid={setShowGrid}
+              showRulers={showRulers}
+              setShowRulers={setShowRulers}
+              onFit={() => setFitSignal((n) => n + 1)}
+              disabled={!grid}
             />
-            {!grid && !image && (
-              <div className="empty">
-                <Icon name="image" size={40} />
-                <p>
-                  <strong>Drop an image here</strong> or choose one on the left.
-                </p>
-                <p className="muted small">
-                  It’s matched to Minecraft blocks right in your browser. Nothing is uploaded. You can also open a .schem to edit
-                  it{art.available ? ', and everything you make is kept in the History tab' : ''}.
-                </p>
+            <div className="work-row">
+              <ToolRail tool={tool} setTool={setTool} selection={selection} onTransform={transform} disabled={!grid} />
+              <div className="stage">
+                {(stale || gen.error || notice) && (
+                  <div className="stage-banners">
+                    {notice && !stale && <div className="banner info">{notice}</div>}
+                    {stale && (
+                      <div className="banner">
+                        <span>Settings changed since your manual edits.</span>
+                        <button type="button" className="btn small primary" onClick={() => runRef.current()}>
+                          Regenerate
+                        </button>
+                        <span className="muted small">discards edits</span>
+                      </div>
+                    )}
+                    {gen.error && <div className="banner">Generation failed: {gen.error}</div>}
+                  </div>
+                )}
+                <Editor
+                  grid={grid}
+                  version={version}
+                  blocks={BLOCKS}
+                  orientation={orientation}
+                  atlas={atlas}
+                  tileSize={blockData.tileSize}
+                  atlasColumns={blockData.atlasColumns}
+                  viewMode={viewMode}
+                  showGrid={showGrid}
+                  showRulers={showRulers}
+                  tool={tool}
+                  brushSize={brushSize}
+                  rectFilled={rectFilled}
+                  currentBlock={currentBlock}
+                  history={history}
+                  fitSignal={fitSignal}
+                  overlay={overlayOn ? overlayImg : null}
+                  overlayOpacity={overlayOpacity}
+                  handleRef={editorRef}
+                  onEdit={onEdit}
+                  onPick={onPick}
+                  onHover={setHover}
+                  onZoom={setZoom}
+                  onMeasure={setMeasurement}
+                  onSelection={setSelection}
+                  onToolChange={setTool}
+                />
+                {!grid && !image && (
+                  <div className="empty">
+                    <Icon name="image" size={40} />
+                    <p>
+                      <strong>Drop an image here</strong> or choose one on the left.
+                    </p>
+                    <p className="muted small">
+                      It’s matched to Minecraft blocks right in your browser. Nothing is uploaded. You can also open a .schem to edit
+                      it{art.available ? ', and everything you make is kept in the History tab' : ''}.
+                    </p>
+                  </div>
+                )}
+                {(gen.busy || (image && !grid)) && <div className="busy">Generating…</div>}
               </div>
-            )}
-            {(gen.busy || (image && !grid)) && <div className="busy">Generating…</div>}
-          </div>
-        </div>
-        <footer className="statusbar">
-          <div className="status-left">
-            {status}
-            {selection.rect && (
-              <span className="status-measure" title={selection.floating ? 'Click or Enter places it, Esc cancels' : 'Esc clears the selection'}>
-                <Icon name="select" size={14} /> {selection.rect.w} × {selection.rect.h}
-                {selection.floating ? ' · moving' : ''}
-              </span>
-            )}
-            {measurement && (
-              <span className="status-measure" title="Esc clears the measurement">
-                <Icon name="measure" size={14} /> {measureSummary(measurement, orientation)}
-              </span>
-            )}
-          </div>
-          <div className="status-right muted num">
-            {grid && `${grid.width} × ${grid.height}`}
-            {grid && ` · ${Math.round(zoom * 100) / 100}px/block`}
-          </div>
-        </footer>
-      </main>
+            </div>
+            <footer className="statusbar">
+              <div className="status-left">
+                {status}
+                {selection.rect && (
+                  <span className="status-measure" title={selection.floating ? 'Click or Enter places it, Esc cancels' : 'Esc clears the selection'}>
+                    <Icon name="select" size={14} /> {selection.rect.w} × {selection.rect.h}
+                    {selection.floating ? ' · moving' : ''}
+                  </span>
+                )}
+                {measurement && (
+                  <span className="status-measure" title="Esc clears the measurement">
+                    <Icon name="measure" size={14} /> {measureSummary(measurement, orientation)}
+                  </span>
+                )}
+              </div>
+              <div className="status-right muted num">
+                {grid && `${grid.width} × ${grid.height}`}
+                {grid && ` · ${Math.round(zoom * 100) / 100}px/block`}
+              </div>
+            </footer>
+          </main>
 
-      <aside className="sidebar right">
-        <div className="tabs" role="tablist">
-          <button type="button" role="tab" aria-selected={tab === 'blocks'} className={tab === 'blocks' ? 'is-active' : ''} onClick={() => setTab('blocks')}>
-            Blocks <span className="badge">{enabled.size}</span>
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === 'materials'}
-            className={tab === 'materials' ? 'is-active' : ''}
-            onClick={() => setTab('materials')}
-          >
-            Materials <span className="badge">{counts.size}</span>
-          </button>
-          {art.available && (
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'history'}
-              className={tab === 'history' ? 'is-active' : ''}
-              onClick={() => setTab('history')}
-            >
-              History <span className="badge">{art.list.length}</span>
-            </button>
-          )}
-        </div>
-        <div className="tab-body">
-          {tab === 'blocks' && <BlockPalettePanel enabled={enabled} setEnabled={setEnabled} orientation={orientation} />}
-          {tab === 'materials' && <MaterialsList counts={counts} orientation={orientation} />}
-          {tab === 'history' && art.available && (
-            <HistoryPanel list={art.list} currentId={art.currentId} onOpen={(id) => void openArt(id)} onDelete={(id) => void deleteArt(id)} />
-          )}
-        </div>
-      </aside>
+          <aside className="sidebar right">
+            <div className="tabs" role="tablist">
+              <button type="button" role="tab" aria-selected={tab === 'blocks'} className={tab === 'blocks' ? 'is-active' : ''} onClick={() => setTab('blocks')}>
+                Blocks <span className="badge">{enabled.size}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === 'materials'}
+                className={tab === 'materials' ? 'is-active' : ''}
+                onClick={() => setTab('materials')}
+              >
+                Materials <span className="badge">{counts.size}</span>
+              </button>
+              {art.available && (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={tab === 'history'}
+                  className={tab === 'history' ? 'is-active' : ''}
+                  onClick={() => setTab('history')}
+                >
+                  History <span className="badge">{art.list.length}</span>
+                </button>
+              )}
+            </div>
+            <div className="tab-body">
+              {tab === 'blocks' && <BlockPalettePanel enabled={enabled} setEnabled={setEnabled} orientation={orientation} />}
+              {tab === 'materials' && <MaterialsList counts={counts} orientation={orientation} />}
+              {tab === 'history' && art.available && (
+                <HistoryPanel list={art.list} currentId={art.currentId} onOpen={(id) => void openArt(id)} onDelete={(id) => void deleteArt(id)} />
+              )}
+            </div>
+          </aside>
+        </>
+      )}
 
       {dragOver && (
         <div className="drop-overlay">
-          <div>Drop an image or .schem to open it</div>
+          <div>Drop an image, a .schem or a 3D model (.glb, .gltf, .stl) to open it</div>
         </div>
       )}
     </div>

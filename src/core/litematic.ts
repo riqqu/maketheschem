@@ -7,10 +7,10 @@ import { voxelize, type SchemInput } from './schem';
 export const LITEMATIC_VERSION = 7;
 export const LITEMATIC_SUBVERSION = 1;
 
-export interface LitematicInput extends SchemInput {
+export type LitematicInput = SchemInput & {
   author?: string;
   description?: string;
-}
+};
 
 /** Bits per palette index: at least 2, enough for every palette entry. */
 export const bitsFor = (paletteSize: number) => Math.max(2, 32 - Math.clz32(Math.max(1, paletteSize - 1)));

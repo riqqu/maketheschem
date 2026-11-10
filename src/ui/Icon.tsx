@@ -36,6 +36,7 @@ const PATHS: Record<string, string> = {
   paste: 'M8.5 5.5h-3v15h13v-15h-3 M8.5 3.5h7v4h-7Z',
   cut: 'M6.5 20a2.5 2.5 0 1 0 0-.01 M17.5 20a2.5 2.5 0 1 0 0-.01 M8 18 17 4 M16 18 7 4',
   file: 'M6 3.5h8l4 4v13H6Z M14 3.5v4h4',
+  cube: 'M12 3 20 7.5v9L12 21l-8-4.5v-9Z M4 7.5 12 12l8-4.5 M12 12v9',
 };
 
 export function Icon({ name, size = 18 }: { name: keyof typeof PATHS | string; size?: number }) {
