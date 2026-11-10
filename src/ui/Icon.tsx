@@ -22,6 +22,20 @@ const PATHS: Record<string, string> = {
   blank: 'M4 4h16v16H4Z M4 12h16 M12 4v16',
   measure: 'M5 19 19 5 M3.5 15.5l5 5 M15.5 3.5l5 5',
   ruler: 'M3.5 15.5 15.5 3.5l5 5-12 12Z M7.5 11.5l2 2 M10.5 8.5l2 2 M13.5 5.5l2 2',
+  history: 'M3.5 12a8.5 8.5 0 1 0 2.5-6 M3.5 4.5V9H8 M12 7.5V12l3 2',
+  trash: 'M4.5 6.5h15 M9.5 6.5V4h5v2.5 M6.5 6.5l1 13h9l1-13 M10 10v6 M14 10v6',
+  line: 'M5 19 19 5 M3.5 17.5h3v3h-3Z M17.5 3.5h3v3h-3Z',
+  rect: 'M4.5 6.5h15v11h-15Z',
+  rectFilled: 'M4.5 6.5h15v11h-15Z M7.5 9.5h9 M7.5 12h9 M7.5 14.5h9',
+  select: 'M4 7V4h3 M10 4h4 M17 4h3v3 M20 10v4 M20 17v3h-3 M14 20h-4 M7 20H4v-3 M4 14v-4',
+  flipH: 'M12 3.5v17 M9 7 4 17h5Z M15 7l5 10h-5Z',
+  flipV: 'M3.5 12h17 M7 9 17 4v5Z M7 15l10 5v-5Z',
+  rot180: 'M5 10a7.5 7.5 0 0 1 14 0 M19 14a7.5 7.5 0 0 1-14 0 M16 10h3.2V6.8 M8 14H4.8v3.2',
+  rotCW: 'M19 12a7 7 0 1 1-2.05-4.95 M19.5 3.5v4h-4',
+  overlay: 'M3.5 8.5h12v12h-12Z M8.5 5.5v-2h12v12h-2',
+  paste: 'M8.5 5.5h-3v15h13v-15h-3 M8.5 3.5h7v4h-7Z',
+  cut: 'M6.5 20a2.5 2.5 0 1 0 0-.01 M17.5 20a2.5 2.5 0 1 0 0-.01 M8 18 17 4 M16 18 7 4',
+  file: 'M6 3.5h8l4 4v13H6Z M14 3.5v4h4',
 };
 
 export function Icon({ name, size = 18 }: { name: keyof typeof PATHS | string; size?: number }) {

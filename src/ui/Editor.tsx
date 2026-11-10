@@ -1,10 +1,37 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
 import { brushCells, floodFill, paintLine, replaceAll, type Grid, type History } from '../core/grid';
-import { lockAxis, measureLabel, rowLineDistance, rulerSteps, type Cell, type Measurement } from '../core/measure';
+import { lockAxis, rowLineDistance, type Cell, type Measurement } from '../core/measure';
+import {
+  clipRect, copyRegion, fillRect, inRect, lineCells, paintCells, rectBetween, rectCells, snapLine, snapSquare, stampClip,
+  transformClip, transformRegion, type Clip, type ClipTransform, type Rect,
+} from '../core/shapes';
 import { AIR, faceOf, type BlockInfo, type Orientation } from '../core/types';
+import { colorCanvas } from '../lib/render';
+import { dashedRect, drawMeasurement, drawRulers, label, outlineCells, RULER_H, RULER_W, screen, type Theme, type View } from './editorDraw';
 
-export type Tool = 'brush' | 'eraser' | 'picker' | 'fill' | 'replace' | 'measure';
+export type Tool = 'brush' | 'eraser' | 'picker' | 'fill' | 'replace' | 'measure' | 'line' | 'rect' | 'select';
 export type ViewMode = 'textures' | 'colors';
+
+export interface SelectionInfo {
+  /** Selected (or floating) area, in grid cells. */
+  rect: Rect | null;
+  /** A pasted or moved selection that is not placed yet. */
+  floating: boolean;
+  clipboard: boolean;
+}
+
+/** Commands for the toolbar and keyboard shortcuts. */
+export interface EditorHandle {
+  copy(): boolean;
+  cut(): boolean;
+  paste(): boolean;
+  deleteSelection(): boolean;
+  selectAll(): void;
+  /** Applies to the floating selection, else the selection, else the whole art (quarter turns need a selection). */
+  transform(op: ClipTransform): boolean;
+  commitFloating(): boolean;
+  cancelFloating(): boolean;
+}
 
 interface Props {
   grid: Grid | null;
@@ -20,14 +47,21 @@ interface Props {
   showRulers: boolean;
   tool: Tool;
   brushSize: number;
+  rectFilled: boolean;
   currentBlock: number;
   history: History;
   fitSignal: number;
+  /** Source image drawn over the blocks for comparison, or null. */
+  overlay: HTMLImageElement | null;
+  overlayOpacity: number;
+  handleRef: Ref<EditorHandle>;
   onEdit: () => void;
   onPick: (value: number) => void;
   onHover: (cell: Cell | null) => void;
   onZoom: (scale: number) => void;
   onMeasure: (m: Measurement | null) => void;
+  onSelection: (info: SelectionInfo) => void;
+  onToolChange: (tool: Tool) => void;
 }
 
 const MIN_SCALE = 0.2;
@@ -36,17 +70,29 @@ const MAX_SCALE = 64;
 const TEXTURE_MIN_SCALE = 6;
 /** Thick grid lines every this many blocks (matches the ruler numbering). */
 const MAJOR = 10;
-/** Ruler thickness: horizontal ruler along the top, vertical ruler along the right edge. */
-const RULER_H = 20;
-const RULER_W = 34;
-const FONT = '10.5px system-ui, -apple-system, "Segoe UI", sans-serif';
+
+interface Floating {
+  clip: Clip;
+  x: number;
+  y: number;
+  /** Where a moved selection came from (cleared when it is placed); null for a paste. */
+  source: Rect | null;
+}
 
 type Drag =
   | { kind: 'pan'; sx: number; sy: number; ox: number; oy: number }
   | { kind: 'paint'; lx: number; ly: number; value: number }
-  | { kind: 'measure' };
+  | { kind: 'measure' }
+  | { kind: 'shape'; a: Cell; b: Cell }
+  | { kind: 'select'; a: Cell }
+  | { kind: 'move'; dx: number; dy: number };
+
+/** Survives switching between arts. */
+let clipboard: Clip | null = null;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+const isTyping = (e: KeyboardEvent) =>
+  !!(e.target as HTMLElement)?.closest?.('input:not([type=checkbox]):not([type=range]):not([type=radio]), textarea, select, [contenteditable]');
 
 export function Editor(props: Props) {
   const propsRef = useRef(props);
@@ -54,16 +100,18 @@ export function Editor(props: Props) {
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const view = useRef({ scale: 8, ox: 0, oy: 0, cw: 0, ch: 0 });
-  const colorCanvas = useRef<HTMLCanvasElement | null>(null);
+  const view = useRef<View>({ scale: 8, ox: 0, oy: 0, cw: 0, ch: 0 });
+  const colorCache = useRef<HTMLCanvasElement | null>(null);
   const colorDirty = useRef(true);
   const hover = useRef<Cell | null>(null);
   const measure = useRef<Measurement | null>(null);
+  const selection = useRef<Rect | null>(null);
+  const floating = useRef<Floating | null>(null);
   const drag = useRef<Drag | null>(null);
   const space = useRef(false);
   const frame = useRef(0);
   const fittedFor = useRef('');
-  const theme = useRef({
+  const theme = useRef<Theme>({
     checkA: '#d9dce2',
     checkB: '#c9cdd5',
     line: 'rgba(0,0,0,0.12)',
@@ -76,37 +124,13 @@ export function Editor(props: Props) {
 
   // ---- drawing -----------------------------------------------------------------------------
 
-  const rebuildColors = (g: Grid) => {
-    const { blocks, orientation } = propsRef.current;
-    let c = colorCanvas.current;
-    if (!c) c = colorCanvas.current = document.createElement('canvas');
-    if (c.width !== g.width || c.height !== g.height) {
-      c.width = g.width;
-      c.height = g.height;
-    }
-    const ctx = c.getContext('2d');
-    if (!ctx) return;
-    const img = ctx.createImageData(g.width, g.height);
-    const lut = new Uint8Array(blocks.length * 3);
-    blocks.forEach((b, i) => lut.set(faceOf(b, orientation).rgb, i * 3));
-    for (let i = 0; i < g.cells.length; i++) {
-      const v = g.cells[i];
-      if (v === AIR || v >= blocks.length) continue;
-      img.data[i * 4] = lut[v * 3];
-      img.data[i * 4 + 1] = lut[v * 3 + 1];
-      img.data[i * 4 + 2] = lut[v * 3 + 2];
-      img.data[i * 4 + 3] = 255;
-    }
-    ctx.putImageData(img, 0, 0);
-    colorDirty.current = false;
-  };
-
   const draw = () => {
     const canvas = canvasRef.current;
     const ctx = canvas?.getContext('2d');
     if (!canvas || !ctx) return;
     const p = propsRef.current;
-    const { scale, ox, oy, cw, ch } = view.current;
+    const v = view.current;
+    const { scale, ox, oy, cw, ch } = v;
     canvas.dataset.view = `${scale},${ox},${oy}`; // read by the browser tests to locate cells
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -114,42 +138,91 @@ export function Editor(props: Props) {
     const g = p.grid;
     if (!g) return;
 
-    const sx = (x: number) => Math.round(ox + x * scale);
-    const sy = (y: number) => Math.round(oy + y * scale);
+    const { sx, sy } = screen(v);
     const x0 = clamp(Math.floor(-ox / scale), 0, g.width);
     const x1 = clamp(Math.ceil((cw - ox) / scale), 0, g.width);
     const y0 = clamp(Math.floor(-oy / scale), 0, g.height);
     const y1 = clamp(Math.ceil((ch - oy) / scale), 0, g.height);
     const t = theme.current;
+    const visible = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+
+    const checker = (r: Rect) => {
+      ctx.fillStyle = t.checkA;
+      ctx.fillRect(sx(r.x), sy(r.y), sx(r.x + r.w) - sx(r.x), sy(r.y + r.h) - sy(r.y));
+      if (scale < 4) return;
+      ctx.fillStyle = t.checkB;
+      for (let y = r.y; y < r.y + r.h; y++) {
+        for (let x = r.x + ((r.x + y) % 2); x < r.x + r.w; x += 2) ctx.fillRect(sx(x), sy(y), sx(x + 1) - sx(x), sy(y + 1) - sy(y));
+      }
+    };
 
     // Air shows as a checkerboard (one square per block when zoomed in).
-    ctx.fillStyle = t.checkA;
-    ctx.fillRect(sx(0), sy(0), sx(g.width) - sx(0), sy(g.height) - sy(0));
-    if (scale >= 4) {
-      ctx.fillStyle = t.checkB;
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0 + ((x0 + y) % 2); x < x1; x += 2) ctx.fillRect(sx(x), sy(y), sx(x + 1) - sx(x), sy(y + 1) - sy(y));
+    checker(visible);
+
+    ctx.imageSmoothingEnabled = false;
+    const useTextures = !!(p.viewMode === 'textures' && scale >= TEXTURE_MIN_SCALE && p.atlas);
+    const tiles = p.blocks.map((b) => faceOf(b, p.orientation).tile);
+    const rgb = p.blocks.map((b) => faceOf(b, p.orientation).rgb);
+    /** One block at cell (x, y), as a texture or flat colour. */
+    const drawBlock = (value: number, x: number, y: number, alpha = 1) => {
+      if (value === AIR || value >= tiles.length) return;
+      const dx = sx(x), dy = sy(y), dw = sx(x + 1) - dx, dh = sy(y + 1) - dy;
+      ctx.globalAlpha = alpha;
+      if (useTextures && p.atlas) {
+        const tile = tiles[value];
+        const { tileSize: ts, atlasColumns: cols } = p;
+        ctx.drawImage(p.atlas, (tile % cols) * ts, Math.floor(tile / cols) * ts, ts, ts, dx, dy, dw, dh);
+      } else {
+        const c = rgb[value];
+        ctx.fillStyle = `rgb(${c[0]},${c[1]},${c[2]})`;
+        ctx.fillRect(dx, dy, dw, dh);
+      }
+      ctx.globalAlpha = 1;
+    };
+
+    if (useTextures) {
+      for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) drawBlock(g.cells[y * g.width + x], x, y);
+    } else {
+      if (colorDirty.current || !colorCache.current) {
+        colorCache.current = colorCanvas(g, p.blocks, p.orientation);
+        colorDirty.current = false;
+      }
+      ctx.drawImage(colorCache.current, sx(0), sy(0), sx(g.width) - sx(0), sy(g.height) - sy(0));
+    }
+
+    // A moved selection leaves air behind until it is placed; then the floating blocks on top.
+    const f = floating.current;
+    if (f) {
+      if (f.source) {
+        const src = clipRect(f.source, g.width, g.height);
+        if (src) checker(src);
+      }
+      for (let cy = 0; cy < f.clip.height; cy++) {
+        const y = f.y + cy;
+        if (y < y0 || y >= y1) continue;
+        for (let cx = 0; cx < f.clip.width; cx++) {
+          const x = f.x + cx;
+          if (x >= x0 && x < x1) drawBlock(f.clip.cells[cy * f.clip.width + cx], x, y);
+        }
       }
     }
 
-    ctx.imageSmoothingEnabled = false;
-    const useTextures = p.viewMode === 'textures' && scale >= TEXTURE_MIN_SCALE && p.atlas;
-    if (useTextures && p.atlas) {
-      const { tileSize: ts, atlasColumns: cols, blocks, orientation } = p;
-      const tiles = blocks.map((b) => faceOf(b, orientation).tile);
-      for (let y = y0; y < y1; y++) {
-        const dy = sy(y), dh = sy(y + 1) - dy;
-        for (let x = x0; x < x1; x++) {
-          const v = g.cells[y * g.width + x];
-          if (v === AIR || v >= tiles.length) continue;
-          const tile = tiles[v];
-          const dx = sx(x);
-          ctx.drawImage(p.atlas, (tile % cols) * ts, Math.floor(tile / cols) * ts, ts, ts, dx, dy, sx(x + 1) - dx, dh);
-        }
+    // Line / rectangle preview.
+    const d = drag.current;
+    if (d?.kind === 'shape') {
+      for (const i of shapeCells(g, d.a, d.b)) {
+        const x = i % g.width, y = (i - x) / g.width;
+        if (x >= x0 && x < x1 && y >= y0 && y < y1) drawBlock(p.currentBlock, x, y, 0.85);
       }
-    } else {
-      if (colorDirty.current || !colorCanvas.current) rebuildColors(g);
-      if (colorCanvas.current) ctx.drawImage(colorCanvas.current, sx(0), sy(0), sx(g.width) - sx(0), sy(g.height) - sy(0));
+    }
+
+    // Source image overlay for comparison.
+    if (p.overlay && p.overlayOpacity > 0) {
+      ctx.save();
+      ctx.globalAlpha = p.overlayOpacity;
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(p.overlay, sx(0), sy(0), sx(g.width) - sx(0), sy(g.height) - sy(0));
+      ctx.restore();
     }
 
     // Grid lines: every block when zoomed in, and every 10 blocks (same origin as the rulers) for counting.
@@ -179,10 +252,20 @@ export function Editor(props: Props) {
     ctx.lineWidth = 1;
     ctx.strokeRect(sx(0) - 0.5, sy(0) - 0.5, sx(g.width) - sx(0) + 1, sy(g.height) - sy(0) + 1);
 
+    // Selection or floating area.
+    const sel = f ? { x: f.x, y: f.y, w: f.clip.width, h: f.clip.height } : selection.current;
+    if (sel) {
+      dashedRect(ctx, sx(sel.x), sy(sel.y), sx(sel.x + sel.w) - sx(sel.x), sy(sel.y + sel.h) - sy(sel.y));
+      if (d?.kind === 'select' || d?.kind === 'move') {
+        label(ctx, `${sel.w} × ${sel.h}`, sx(sel.x), sy(sel.y) - 28, { top: p.showRulers ? RULER_H : 0, right: cw - (p.showRulers ? RULER_W : 0), bottom: ch });
+      }
+    }
+
     // Tool footprint under the cursor.
     const h = hover.current;
-    if (h && !space.current && drag.current?.kind !== 'pan') {
-      const size = p.tool === 'brush' || p.tool === 'eraser' ? p.brushSize : 1;
+    const footprint = p.tool !== 'select' && p.tool !== 'measure';
+    if (h && footprint && !space.current && d?.kind !== 'pan' && d?.kind !== 'shape') {
+      const size = p.tool === 'brush' || p.tool === 'eraser' || p.tool === 'line' ? p.brushSize : 1;
       const cells = brushCells(g, h.x, h.y, size);
       if (cells.length) {
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -193,157 +276,25 @@ export function Editor(props: Props) {
         outlineCells(ctx, sx(minX), sy(minY), sx(maxX + 1) - sx(minX), sy(maxY + 1) - sy(minY));
       }
     }
-
-    // Measurement: span box, centre-to-centre line, end blocks and a label.
-    const m = measure.current;
-    if (m) {
-      const minX = Math.min(m.a.x, m.b.x), maxX = Math.max(m.a.x, m.b.x);
-      const minY = Math.min(m.a.y, m.b.y), maxY = Math.max(m.a.y, m.b.y);
-      const rx = sx(minX), ry = sy(minY), rw = sx(maxX + 1) - rx, rh = sy(maxY + 1) - ry;
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-      ctx.strokeRect(rx - 0.5, ry - 0.5, rw + 1, rh + 1);
-      ctx.lineWidth = 1;
-      ctx.setLineDash([5, 4]);
-      ctx.strokeStyle = '#ffffff';
-      ctx.strokeRect(rx - 0.5, ry - 0.5, rw + 1, rh + 1);
-      ctx.setLineDash([]);
-      for (const c of [m.a, m.b]) outlineCells(ctx, sx(c.x), sy(c.y), sx(c.x + 1) - sx(c.x), sy(c.y + 1) - sy(c.y));
-      const ax = ox + (m.a.x + 0.5) * scale, ay = oy + (m.a.y + 0.5) * scale;
-      const bx = ox + (m.b.x + 0.5) * scale, by = oy + (m.b.y + 0.5) * scale;
-      ctx.lineCap = 'round';
-      ctx.lineWidth = 4;
-      ctx.strokeStyle = 'rgba(0,0,0,0.65)';
-      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
-      ctx.lineWidth = 2;
-      ctx.strokeStyle = '#ffffff';
-      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
-      ctx.lineCap = 'butt';
-
-      const text = measureLabel(m);
-      ctx.font = `600 12px system-ui, -apple-system, "Segoe UI", sans-serif`;
-      const tw = Math.ceil(ctx.measureText(text).width) + 14;
-      const top = p.showRulers ? RULER_H : 0, right = cw - (p.showRulers ? RULER_W : 0);
-      const lx = clamp(bx + 12, 4, right - tw - 4);
-      const ly = clamp(by - 30, top + 4, ch - 26);
-      ctx.fillStyle = 'rgba(18,20,24,0.9)';
-      ctx.beginPath();
-      ctx.roundRect(lx, ly, tw, 22, 5);
-      ctx.fill();
-      ctx.fillStyle = '#ffffff';
-      ctx.textBaseline = 'middle';
-      ctx.textAlign = 'left';
-      ctx.fillText(text, lx + 7, ly + 11.5);
+    if (d?.kind === 'shape') {
+      const r = rectBetween(d.a, d.b);
+      label(ctx, `${r.w} × ${r.h}`, sx(d.b.x + 1) + 8, sy(d.b.y) - 28, { top: p.showRulers ? RULER_H : 0, right: cw - (p.showRulers ? RULER_W : 0), bottom: ch });
     }
 
-    if (p.showRulers) drawRulers(ctx, g, p.orientation);
+    if (measure.current) drawMeasurement(ctx, v, measure.current, p.showRulers);
+
+    if (p.showRulers) {
+      const bands: { from: Cell; to: Cell; alpha: number }[] = [];
+      if (measure.current) bands.push({ from: measure.current.a, to: measure.current.b, alpha: 0.28 });
+      if (sel) bands.push({ from: { x: sel.x, y: sel.y }, to: { x: sel.x + sel.w - 1, y: sel.y + sel.h - 1 }, alpha: 0.2 });
+      if (hover.current) bands.push({ from: hover.current, to: hover.current, alpha: 0.5 });
+      drawRulers(ctx, v, t, g, p.orientation, bands);
+    }
   };
 
-  /** Black + white outline that stays visible on any block colour. */
-  const outlineCells = (ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number) => {
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = 'rgba(0,0,0,0.75)';
-    ctx.strokeRect(x - 0.5, y - 0.5, w + 1, h + 1);
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = '#fff';
-    ctx.strokeRect(x - 0.5, y - 0.5, w + 1, h + 1);
-  };
-
-  /**
-   * Rulers in screen space: block distances from the art's origin corner (left edge; bottom for walls, north edge
-   * for floors). Tick spacing adapts to the zoom. Hovered and measured blocks are highlighted on both rulers.
-   */
-  const drawRulers = (ctx: CanvasRenderingContext2D, g: Grid, orientation: Orientation) => {
-    const { scale, ox, oy, cw, ch } = view.current;
-    const t = theme.current;
-    const { label, minor } = rulerSteps(scale);
-    const sx = (x: number) => Math.round(ox + x * scale);
-    const sy = (y: number) => Math.round(oy + y * scale);
-    const right = cw - RULER_W;
-    const rowDist = (r: number) => rowLineDistance(r, g.height, orientation);
-
-    ctx.save();
-    ctx.font = FONT;
-    ctx.fillStyle = t.rulerBg;
-    ctx.fillRect(0, 0, cw, RULER_H);
-    ctx.fillRect(right, 0, RULER_W, ch);
-
-    const bands: { from: Cell; to: Cell; alpha: number }[] = [];
-    if (measure.current) bands.push({ from: measure.current.a, to: measure.current.b, alpha: 0.28 });
-    if (hover.current) bands.push({ from: hover.current, to: hover.current, alpha: 0.5 });
-
-    // Top ruler (x).
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, right, RULER_H);
-    ctx.clip();
-    for (const b of bands) {
-      ctx.globalAlpha = b.alpha;
-      ctx.fillStyle = t.accent;
-      const a = Math.min(b.from.x, b.to.x), z = Math.max(b.from.x, b.to.x) + 1;
-      ctx.fillRect(sx(a), 0, sx(z) - sx(a), RULER_H);
-    }
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = t.rulerLine;
-    ctx.fillStyle = t.rulerText;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    const xa = clamp(Math.floor(-ox / scale), 0, g.width), xb = clamp(Math.ceil((right - ox) / scale), 0, g.width);
-    for (let x = Math.ceil(xa / minor) * minor; x <= xb; x += minor) {
-      const px = sx(x) + 0.5;
-      const big = x % label === 0;
-      ctx.moveTo(px, RULER_H);
-      ctx.lineTo(px, RULER_H - (big ? 7 : 4));
-      if (big) ctx.fillText(String(x), px, 2);
-    }
-    ctx.stroke();
-    ctx.restore();
-
-    // Right ruler (y up from the bottom for walls, z down from north for floors).
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(right, RULER_H, RULER_W, ch - RULER_H);
-    ctx.clip();
-    for (const b of bands) {
-      ctx.globalAlpha = b.alpha;
-      ctx.fillStyle = t.accent;
-      const a = Math.min(b.from.y, b.to.y), z = Math.max(b.from.y, b.to.y) + 1;
-      ctx.fillRect(right, sy(a), RULER_W, sy(z) - sy(a));
-    }
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = t.rulerLine;
-    ctx.fillStyle = t.rulerText;
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.beginPath();
-    const ya = clamp(Math.floor((RULER_H - oy) / scale), 0, g.height), yb = clamp(Math.ceil((ch - oy) / scale), 0, g.height);
-    for (let y = ya; y <= yb; y++) {
-      const d = rowDist(y);
-      if (d % minor !== 0) continue;
-      const py = sy(y) + 0.5;
-      const big = d % label === 0;
-      ctx.moveTo(right, py);
-      ctx.lineTo(right + (big ? 7 : 4), py);
-      if (big) ctx.fillText(String(d), right + 9, py);
-    }
-    ctx.stroke();
-    ctx.restore();
-
-    // Edges and the corner box with the axis names.
-    ctx.strokeStyle = t.rulerLine;
-    ctx.beginPath();
-    ctx.moveTo(0, RULER_H - 0.5);
-    ctx.lineTo(right, RULER_H - 0.5);
-    ctx.moveTo(right + 0.5, RULER_H);
-    ctx.lineTo(right + 0.5, ch);
-    ctx.stroke();
-    ctx.fillStyle = t.rulerText;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(orientation === 'wall' ? 'x · y' : 'x · z', right + RULER_W / 2, RULER_H / 2);
-    ctx.restore();
+  const shapeCells = (g: Grid, a: Cell, b: Cell) => {
+    const p = propsRef.current;
+    return p.tool === 'line' ? lineCells(g, a, b, p.brushSize) : rectCells(g, a, b, p.rectFilled, p.brushSize);
   };
 
   const drawRef = useRef(draw);
@@ -376,10 +327,182 @@ export function Editor(props: Props) {
     requestDraw();
   };
 
+  // ---- selection ---------------------------------------------------------------------------
+
+  const report = () => {
+    const f = floating.current;
+    propsRef.current.onSelection({
+      rect: f ? { x: f.x, y: f.y, w: f.clip.width, h: f.clip.height } : selection.current,
+      floating: !!f,
+      clipboard: !!clipboard,
+    });
+  };
+
+  const edited = () => {
+    colorDirty.current = true;
+    propsRef.current.onEdit();
+    requestDraw();
+  };
+
+  const commitFloating = (): boolean => {
+    const f = floating.current;
+    const { grid: g, history } = propsRef.current;
+    if (!f || !g) return false;
+    history.begin();
+    if (f.source) fillRect(g, history, f.source, AIR);
+    stampClip(g, history, f.clip, f.x, f.y, true);
+    const changed = history.commit(g);
+    floating.current = null;
+    selection.current = clipRect({ x: f.x, y: f.y, w: f.clip.width, h: f.clip.height }, g.width, g.height);
+    report();
+    if (changed) edited();
+    else requestDraw();
+    return true;
+  };
+
+  const cancelFloating = (): boolean => {
+    const f = floating.current;
+    if (!f) return false;
+    floating.current = null;
+    selection.current = f.source;
+    report();
+    requestDraw();
+    return true;
+  };
+
+  /** Turns the selection into a floating piece that can be moved; the original area clears when it is placed. */
+  const lift = (): Floating | null => {
+    const g = propsRef.current.grid;
+    const sel = selection.current && g ? clipRect(selection.current, g.width, g.height) : null;
+    if (!g || !sel) return null;
+    floating.current = { clip: copyRegion(g, sel), x: sel.x, y: sel.y, source: sel };
+    selection.current = null;
+    return floating.current;
+  };
+
+  const clearSelection = () => {
+    if (floating.current) commitFloating();
+    if (selection.current) {
+      selection.current = null;
+      report();
+      requestDraw();
+    }
+  };
+
+  const copy = (): boolean => {
+    const g = propsRef.current.grid;
+    const f = floating.current;
+    if (f) clipboard = f.clip;
+    else if (g && selection.current) clipboard = copyRegion(g, selection.current);
+    else return false;
+    report();
+    return true;
+  };
+
+  const deleteSelection = (): boolean => {
+    const { grid: g, history } = propsRef.current;
+    if (!g) return false;
+    const f = floating.current;
+    if (f) {
+      floating.current = null;
+      if (f.source) {
+        history.begin();
+        fillRect(g, history, f.source, AIR);
+        if (history.commit(g)) edited();
+      }
+      report();
+      requestDraw();
+      return true;
+    }
+    if (!selection.current) return false;
+    history.begin();
+    fillRect(g, history, selection.current, AIR);
+    if (history.commit(g)) edited();
+    return true;
+  };
+
+  const paste = (): boolean => {
+    const p = propsRef.current;
+    const g = p.grid;
+    if (!g || !clipboard) return false;
+    if (floating.current) commitFloating();
+    const v = view.current;
+    let x: number, y: number;
+    if (selection.current) {
+      ({ x, y } = selection.current);
+    } else {
+      // Centre of the view, kept inside the art where possible.
+      x = Math.floor((v.cw / 2 - v.ox) / v.scale - clipboard.width / 2);
+      y = Math.floor((v.ch / 2 - v.oy) / v.scale - clipboard.height / 2);
+      x = clamp(x, 0, Math.max(0, g.width - clipboard.width));
+      y = clamp(y, 0, Math.max(0, g.height - clipboard.height));
+    }
+    floating.current = { clip: clipboard, x, y, source: null };
+    selection.current = null;
+    if (p.tool !== 'select') p.onToolChange('select');
+    report();
+    requestDraw();
+    return true;
+  };
+
+  const transform = (op: ClipTransform): boolean => {
+    const { grid: g, history } = propsRef.current;
+    if (!g) return false;
+    const quarter = op === 'rotCW' || op === 'rotCCW';
+    let f = floating.current;
+    if (!f && quarter) f = lift();
+    if (f) {
+      const t = transformClip(f.clip, op);
+      // Turn around the centre.
+      f.x += Math.floor((f.clip.width - t.width) / 2);
+      f.y += Math.floor((f.clip.height - t.height) / 2);
+      f.clip = t;
+      report();
+      requestDraw();
+      return true;
+    }
+    if (quarter) return false;
+    const r = selection.current ?? { x: 0, y: 0, w: g.width, h: g.height };
+    if (transformRegion(g, history, r, op as 'flipH' | 'flipV' | 'rot180')) edited();
+    return true;
+  };
+
+  const selectAll = () => {
+    const p = propsRef.current;
+    const g = p.grid;
+    if (!g) return;
+    if (floating.current) commitFloating();
+    selection.current = { x: 0, y: 0, w: g.width, h: g.height };
+    if (p.tool !== 'select') p.onToolChange('select');
+    report();
+    requestDraw();
+  };
+
+  useImperativeHandle(props.handleRef, () => ({
+    copy,
+    cut: () => copy() && deleteSelection(),
+    paste,
+    deleteSelection,
+    selectAll,
+    transform,
+    commitFloating,
+    cancelFloating,
+  }));
+
   const updateCursor = () => {
     const c = canvasRef.current;
     if (!c) return;
-    c.style.cursor = drag.current?.kind === 'pan' ? 'grabbing' : space.current ? 'grab' : 'crosshair';
+    const d = drag.current;
+    let cursor = 'crosshair';
+    if (d?.kind === 'pan') cursor = 'grabbing';
+    else if (space.current) cursor = 'grab';
+    else if (d?.kind === 'move') cursor = 'move';
+    else if (propsRef.current.tool === 'select' && hover.current) {
+      const f = floating.current;
+      const r = f ? { x: f.x, y: f.y, w: f.clip.width, h: f.clip.height } : selection.current;
+      if (r && inRect(r, hover.current)) cursor = 'move';
+    }
+    c.style.cursor = cursor;
   };
 
   // ---- effects -----------------------------------------------------------------------------
@@ -430,9 +553,14 @@ export function Editor(props: Props) {
     return () => ro.disconnect();
   }, []);
 
-  // Fit when a grid of a new size appears (and drop a measurement that no longer fits) or when asked.
+  // A new grid (generated, opened, resized): fit when its size changed, and drop selections that belonged to the old one.
   useEffect(() => {
     const g = props.grid;
+    if (floating.current || selection.current) {
+      floating.current = null;
+      selection.current = null;
+      report();
+    }
     const key = g ? `${g.width}x${g.height}` : '';
     if (key !== fittedFor.current) {
       fittedFor.current = key;
@@ -452,7 +580,13 @@ export function Editor(props: Props) {
 
   useEffect(() => {
     requestDraw();
-  }, [props.viewMode, props.showGrid, props.showRulers, props.atlas, props.tool, props.brushSize]);
+  }, [props.viewMode, props.showGrid, props.showRulers, props.atlas, props.tool, props.brushSize, props.overlay, props.overlayOpacity]);
+
+  // Leaving the select tool places a floating selection.
+  useEffect(() => {
+    if (props.tool !== 'select' && floating.current) commitFloating();
+    updateCursor();
+  }, [props.tool]);
 
   // Wheel zoom around the cursor (needs a non-passive listener to stop page scroll).
   useEffect(() => {
@@ -475,15 +609,43 @@ export function Editor(props: Props) {
     return () => canvas.removeEventListener('wheel', onWheel);
   }, []);
 
-  // Hold Space to pan with the left mouse button; Escape clears the measurement.
+  // Keys handled here: Space (pan), Escape, Enter and the selection shortcuts.
   useEffect(() => {
-    const typing = (e: KeyboardEvent) => (e.target as HTMLElement)?.closest?.('input, textarea, select, [contenteditable]');
     const down = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && measure.current) {
-        setMeasure(null);
+      if (isTyping(e)) return;
+      const ctrl = e.ctrlKey || e.metaKey;
+      const k = e.key.toLowerCase();
+      if (e.key === 'Escape') {
+        if (drag.current?.kind === 'shape' || drag.current?.kind === 'select') {
+          drag.current = null;
+          requestDraw();
+        } else if (cancelFloating()) {
+          // placed nothing
+        } else if (measure.current) setMeasure(null);
+        else if (selection.current) clearSelection();
         return;
       }
-      if (e.code !== 'Space' || typing(e)) return;
+      if (e.key === 'Enter' && floating.current) {
+        e.preventDefault();
+        commitFloating();
+        return;
+      }
+      if (!propsRef.current.grid) return;
+      if (ctrl && !e.shiftKey && !e.altKey) {
+        if (k === 'c' && copy()) e.preventDefault();
+        else if (k === 'x' && copy() && deleteSelection()) e.preventDefault();
+        else if (k === 'v' && paste()) e.preventDefault();
+        else if (k === 'a') {
+          e.preventDefault();
+          selectAll();
+        }
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && deleteSelection()) {
+        e.preventDefault();
+        return;
+      }
+      if (e.code !== 'Space') return;
       e.preventDefault();
       if (!space.current) { space.current = true; updateCursor(); requestDraw(); }
     };
@@ -545,6 +707,33 @@ export function Editor(props: Props) {
     const g = p.grid;
     if (!g || onRuler(e)) return;
     const c = cellAt(e);
+
+    // The select tool may grab a floating piece hanging over the edge.
+    if (p.tool === 'select' && e.button === 0) {
+      const f = floating.current;
+      if (f && inRect({ x: f.x, y: f.y, w: f.clip.width, h: f.clip.height }, c)) {
+        drag.current = { kind: 'move', dx: c.x - f.x, dy: c.y - f.y };
+        updateCursor();
+        return;
+      }
+      if (!f && selection.current && inRect(selection.current, c) && !e.shiftKey) {
+        const lifted = lift();
+        if (lifted) {
+          drag.current = { kind: 'move', dx: c.x - lifted.x, dy: c.y - lifted.y };
+          report();
+          updateCursor();
+          return;
+        }
+      }
+      if (f) commitFloating();
+      const start = clampCell(g, c);
+      selection.current = { ...start, w: 1, h: 1 };
+      drag.current = { kind: 'select', a: start };
+      report();
+      requestDraw();
+      return;
+    }
+
     if (!inside(g, c)) return;
     const i = c.y * g.width + c.x;
 
@@ -565,10 +754,13 @@ export function Editor(props: Props) {
       drag.current = { kind: 'paint', lx: c.x, ly: c.y, value };
       colorDirty.current = true;
       requestDraw();
+    } else if (p.tool === 'line' || p.tool === 'rect') {
+      drag.current = { kind: 'shape', a: c, b: c };
+      requestDraw();
     } else if (p.tool === 'fill') {
-      if (floodFill(g, p.history, c.x, c.y, p.currentBlock) > 0) p.onEdit();
+      if (floodFill(g, p.history, c.x, c.y, p.currentBlock) > 0) edited();
     } else if (p.tool === 'replace') {
-      if (replaceAll(g, p.history, g.cells[i], p.currentBlock) > 0) p.onEdit();
+      if (replaceAll(g, p.history, g.cells[i], p.currentBlock) > 0) edited();
     }
   };
 
@@ -590,6 +782,7 @@ export function Editor(props: Props) {
     if (h?.x !== prev?.x || h?.y !== prev?.y) {
       hover.current = h;
       p.onHover(h);
+      updateCursor();
       requestDraw();
     }
     if (d?.kind === 'measure' && measure.current) {
@@ -607,6 +800,31 @@ export function Editor(props: Props) {
         colorDirty.current = true;
         requestDraw();
       }
+    } else if (d?.kind === 'shape') {
+      let b = { x: clamp(c.x, -1, g.width), y: clamp(c.y, -1, g.height) };
+      if (e.shiftKey) b = p.tool === 'line' ? snapLine(d.a, b) : snapSquare(d.a, b);
+      if (b.x !== d.b.x || b.y !== d.b.y) {
+        d.b = b;
+        requestDraw();
+      }
+    } else if (d?.kind === 'select') {
+      const b = clampCell(g, c);
+      const r = rectBetween(d.a, b);
+      const s = selection.current;
+      if (!s || s.x !== r.x || s.y !== r.y || s.w !== r.w || s.h !== r.h) {
+        selection.current = r;
+        report();
+        requestDraw();
+      }
+    } else if (d?.kind === 'move' && floating.current) {
+      const f = floating.current;
+      const x = c.x - d.dx, y = c.y - d.dy;
+      if (x !== f.x || y !== f.y) {
+        f.x = x;
+        f.y = y;
+        report();
+        requestDraw();
+      }
     }
   };
 
@@ -614,10 +832,17 @@ export function Editor(props: Props) {
     const p = propsRef.current;
     const d = drag.current;
     drag.current = null;
-    if (d?.kind === 'paint' && p.grid && p.history.commit(p.grid)) p.onEdit();
-    // A click without dragging clears the measurement.
+    const g = p.grid;
+    if (d?.kind === 'paint' && g && p.history.commit(g)) p.onEdit();
+    if (d?.kind === 'shape' && g && paintCells(g, p.history, shapeCells(g, d.a, d.b), p.currentBlock)) edited();
+    // A click without dragging clears the measurement / selection.
     const m = measure.current;
     if (d?.kind === 'measure' && m && m.a.x === m.b.x && m.a.y === m.b.y) setMeasure(null);
+    const s = selection.current;
+    if (d?.kind === 'select' && s && s.w === 1 && s.h === 1) {
+      selection.current = null;
+      report();
+    }
     updateCursor();
     requestDraw();
   };

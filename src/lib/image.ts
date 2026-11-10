@@ -42,3 +42,9 @@ export async function loadImageFile(file: File): Promise<LoadedImage> {
 }
 
 export const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
+/** Schematics have no registered MIME type, so go by extension. */
+export const isSchemFile = (file: File) => /\.schem$/i.test(file.name);
+
+/** For <input accept>. */
+export const ACCEPT_ATTR = [...ACCEPTED_TYPES, '.schem'].join(',');

@@ -558,6 +558,7 @@ input[type='range'] {
 
 /* One fixed-height row: a wrapping toolbar would shift the canvas under the cursor. */
 .toolbar {
+  container-type: inline-size;
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
@@ -751,9 +752,39 @@ input[type='range'] {
   opacity: 0.75;
 }
 
+.work-row {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.toolrail {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 6px;
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.toolrail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.toolrail-group + .toolrail-group {
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
 .stage {
   position: relative;
   flex: 1;
+  min-width: 0;
   min-height: 0;
   background: var(--stage);
 }
@@ -1052,6 +1083,123 @@ input[type='range'] {
 
 .mat-stacks {
   text-align: right;
+}
+
+/* ---- history ------------------------------------------------------------------------------- */
+
+.history-head {
+  margin: 0;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 0;
+}
+
+.history-list li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px 0 8px;
+  border-left: 3px solid transparent;
+}
+
+.history-list li:hover {
+  background: var(--hover);
+}
+
+.history-list li.is-current {
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.history-open {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 4px;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+
+.history-thumb {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: repeating-conic-gradient(var(--checker-a) 0 25%, var(--checker-b) 0 50%) 0 0 / 10px 10px;
+  overflow: hidden;
+}
+
+.history-thumb img {
+  max-width: 100%;
+  max-height: 100%;
+  image-rendering: pixelated;
+}
+
+.history-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.35;
+}
+
+.history-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.history-delete {
+  flex: none;
+  color: var(--muted);
+  opacity: 0;
+}
+
+.history-list li:hover .history-delete,
+.history-delete:focus-visible {
+  opacity: 1;
+}
+
+/* Narrow toolbar: show only the block swatch, not its name. */
+@container (max-width: 720px) {
+  .block-chip {
+    width: auto;
+  }
+  .block-chip .chip-name,
+  .size-label {
+    display: none;
+  }
+}
+
+/* ---- misc additions ------------------------------------------------------------------------ */
+
+.slider-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.overlay-opacity {
+  width: 72px;
+}
+
+@media (hover: none) {
+  .history-delete {
+    opacity: 1;
+  }
 }
 
 /* ---- narrow screens ------------------------------------------------------------------------ */

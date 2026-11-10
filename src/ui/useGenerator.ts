@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { BackgroundOptions } from '../core/background';
-import type { PaletteColor } from '../core/quantize';
+import type { DitherKind, PaletteColor } from '../core/quantize';
 import type { RGBAImage, ResizeMode } from '../core/resample';
 import type { BackgroundInfo, WorkerRequest, WorkerResponse } from '../worker/generate.worker';
 
@@ -9,7 +9,9 @@ export interface GenerateRequest {
   height: number;
   resize: ResizeMode;
   dither: number;
+  ditherMode: DitherKind;
   palette: PaletteColor[];
+  maxTypes: number;
   background: BackgroundOptions | null;
 }
 
@@ -93,5 +95,12 @@ export function useGenerator() {
     });
   }, []);
 
-  return { setSource, generate, backgroundMask, busy, error };
+  /** Drops the result of any request still running (e.g. for an image that is no longer shown). */
+  const cancel = useCallback(() => {
+    latest.current++;
+    callbacks.current.clear();
+    setBusy(false);
+  }, []);
+
+  return { setSource, generate, backgroundMask, cancel, busy, error };
 }

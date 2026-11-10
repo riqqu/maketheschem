@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import pnbt from 'prismarine-nbt';
-import { encodeModifiedUtf8, nbt, writeNbt, writeVarInt } from './nbt';
+import { child, decodeModifiedUtf8, encodeModifiedUtf8, nbt, numberChild, readNbt, writeNbt, writeVarInt } from './nbt';
 
 describe('writeVarInt', () => {
   const enc = (v: number) => {
@@ -68,5 +68,58 @@ describe('writeNbt', () => {
 
   it('rejects a list with mixed element types', () => {
     expect(() => writeNbt('', nbt.compound({ l: nbt.list('int', [nbt.byte(1)]) }))).toThrow();
+  });
+});
+
+describe('readNbt', () => {
+  it('round-trips every tag type with writeNbt', () => {
+    const root = nbt.compound({
+      b: nbt.byte(-5),
+      s: nbt.short(-300),
+      i: nbt.int(-123456),
+      l: nbt.long(-1234567890123n),
+      f: nbt.float(1.5),
+      d: nbt.double(-2.25),
+      str: nbt.string('é😀\0x'),
+      ba: nbt.byteArray(Uint8Array.from([1, 200])),
+      ia: nbt.intArray(Int32Array.from([0, -1, 7])),
+      la: nbt.longArray(BigInt64Array.from([1n, -2n, 1n << 62n])),
+      ints: nbt.list('int', [nbt.int(1), nbt.int(2)]),
+      nested: nbt.compound({ x: nbt.list('compound', [nbt.compound({ y: nbt.string('z') })]) }),
+    });
+    const { name, root: back } = readNbt(writeNbt('named', root));
+    expect(name).toBe('named');
+    expect(back).toEqual(root);
+  });
+
+  it('reads data written by an independent writer', () => {
+    const bytes = pnbt.writeUncompressed(
+      {
+        type: 'compound',
+        name: 'Schematic',
+        value: {
+          Width: { type: 'short', value: 3 },
+          Name: { type: 'string', value: 'hello' },
+          Empty: { type: 'list', value: { type: 'end', value: [] } },
+          Longs: { type: 'longArray', value: [[0, 5], [-1, -1]] },
+        },
+      } as never,
+      'big',
+    );
+    const { name, root } = readNbt(new Uint8Array(bytes));
+    expect(name).toBe('Schematic');
+    expect(numberChild(root, 'Width')).toBe(3);
+    expect(child(root, 'Name', 'string')?.value).toBe('hello');
+    expect(child(root, 'Empty', 'list')?.value).toEqual([]);
+    expect([...child(root, 'Longs', 'longArray')!.value]).toEqual([5n, -1n]);
+  });
+
+  it('decodes modified UTF-8 back to the original string', () => {
+    for (const s of ['', 'abc', '\0', 'é', '日本', '😀 ok']) expect(decodeModifiedUtf8(encodeModifiedUtf8(s))).toBe(s);
+  });
+
+  it('fails cleanly on truncated input', () => {
+    const bytes = writeNbt('', nbt.compound({ s: nbt.string('hello') }));
+    expect(() => readNbt(bytes.slice(0, bytes.length - 3))).toThrow(/Unexpected end/);
   });
 });

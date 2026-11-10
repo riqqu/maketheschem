@@ -8,7 +8,7 @@
 //   src/data/blocks.json  block list with state strings, categories and per-face average colours
 //   public/atlas.png      every face texture used, 16x16 tiles in a grid
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yauzl from 'yauzl';
 import { PNG } from 'pngjs';
@@ -18,6 +18,8 @@ const DEFAULT_JAR = join(process.env.APPDATA ?? '', '.minecraft', 'versions', '2
 const JAR = process.argv.slice(2).find((a) => !a.startsWith('--')) ?? process.env.MC_JAR ?? DEFAULT_JAR;
 const TILE = 16;
 const ATLAS_COLUMNS = 32;
+/** Bump when blocks.json gains fields; ensure-blocks.mjs re-extracts older data. */
+export const FORMAT = 2;
 
 // Properties pinned to one value so a block resolves to exactly one blockstate variant.
 const PINNED = { axis: 'y', snowy: 'false', facing: 'south' };
@@ -184,6 +186,23 @@ function checkFullCube(elements) {
 
 // --- textures --------------------------------------------------------------------------------
 
+// sRGB -> OKLab, a copy of src/core/oklab.ts (this script runs in plain Node and cannot import TypeScript).
+const LINEAR = Array.from({ length: 256 }, (_, i) => {
+  const c = i / 255;
+  return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+});
+function oklab(r, g, b) {
+  const lr = LINEAR[r], lg = LINEAR[g], lb = LINEAR[b];
+  const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+  const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+  const s = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+  ];
+}
+
 function makeTextureLoader(files) {
   const cache = new Map();
   return function loadTexture(name) {
@@ -220,7 +239,22 @@ function makeTextureLoader(files) {
           }
         }
         const n = size * size;
-        result = { name, tile, rgb: [Math.round(r / n), Math.round(g / n), Math.round(b / n)] };
+        // Texture noise: RMS OKLab distance of the texels from their mean. High for ores, patterns and speckles.
+        const labs = [];
+        let mL = 0, mA = 0, mB = 0;
+        for (let y = 0; y < size; y++) {
+          for (let x = 0; x < size; x++) {
+            const i = (y * png.width + x) * 4;
+            const lab = oklab(png.data[i], png.data[i + 1], png.data[i + 2]);
+            labs.push(lab);
+            mL += lab[0]; mA += lab[1]; mB += lab[2];
+          }
+        }
+        mL /= n; mA /= n; mB /= n;
+        let v = 0;
+        for (const [L, A, B] of labs) v += (L - mL) ** 2 + (A - mA) ** 2 + (B - mB) ** 2;
+        const noise = Math.round(Math.sqrt(v / n) * 10000) / 10000;
+        result = { name, tile, rgb: [Math.round(r / n), Math.round(g / n), Math.round(b / n)], noise };
       }
     }
     cache.set(name, result);
@@ -342,6 +376,7 @@ async function main() {
   );
 
   const out = {
+    format: FORMAT,
     minecraftVersion: version.name ?? version.id,
     dataVersion: version.world_version,
     tileSize: TILE,
@@ -353,8 +388,8 @@ async function main() {
       name: b.name,
       category: b.category,
       gravity: b.gravity,
-      top: { rgb: b.faces.top.rgb, tile: tileIndex.get(b.faces.top.name), texture: b.faces.top.name },
-      side: { rgb: b.faces.side.rgb, tile: tileIndex.get(b.faces.side.name), texture: b.faces.side.name },
+      top: { rgb: b.faces.top.rgb, tile: tileIndex.get(b.faces.top.name), texture: b.faces.top.name, noise: b.faces.top.noise },
+      side: { rgb: b.faces.side.rgb, tile: tileIndex.get(b.faces.side.name), texture: b.faces.side.name, noise: b.faces.side.noise },
     })),
   };
 
@@ -387,7 +422,9 @@ async function main() {
   console.log(out.categories.map((c) => `${c}: ${out.blocks.filter((b) => b.category === c).length}`).join(' | '));
 }
 
-main().catch((e) => {
-  console.error(e.message ?? e);
-  process.exit(1);
-});
+if (process.argv[1] && fileURLToPath(import.meta.url).toLowerCase() === resolve(process.argv[1]).toLowerCase()) {
+  main().catch((e) => {
+    console.error(e.message ?? e);
+    process.exit(1);
+  });
+}

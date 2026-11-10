@@ -5,6 +5,8 @@ export interface FaceInfo {
   /** Index of the 16x16 tile in public/atlas.png. */
   tile: number;
   texture: string;
+  /** RMS OKLab distance of the texels from their mean: ~0.003 for concrete, 0.1+ for ores and patterns. */
+  noise?: number;
 }
 
 export interface BlockInfo {
@@ -21,6 +23,8 @@ export interface BlockInfo {
 }
 
 export interface BlockData {
+  /** Version of the extraction output (see scripts/extract-blocks.mjs). */
+  format?: number;
   minecraftVersion: string;
   dataVersion: number;
   tileSize: number;

@@ -1,6 +1,7 @@
 // Removes the background, resizes the source image and matches it to blocks off the main thread.
 import { backgroundCells, removeBackground, type BackgroundOptions } from '../core/background';
-import { quantize, type PaletteColor } from '../core/quantize';
+import { quantize, type DitherKind, type PaletteColor } from '../core/quantize';
+import { reducePalette } from '../core/reduce';
 import { resample, type RGBAImage, type ResizeMode } from '../core/resample';
 import type { RGB } from '../core/types';
 
@@ -17,8 +18,12 @@ export type WorkerRequest =
       width: number;
       height: number;
       resize: ResizeMode;
+      /** Dithering strength, 0 = off. */
       dither: number;
+      ditherMode: DitherKind;
       palette: PaletteColor[];
+      /** Use at most this many block types (0 = no limit). */
+      maxTypes: number;
       background: BackgroundOptions | null;
     }
   | {
@@ -72,7 +77,8 @@ scope.onmessage = (e) => {
     }
     const c = msg.background ? clean(source, msg.background) : null;
     const pixels = resample(c ? c.image : source, msg.width, msg.height, msg.resize);
-    const cells = quantize(pixels, msg.width, msg.height, msg.palette, { dither: msg.dither });
+    const palette = msg.maxTypes > 0 ? reducePalette(pixels, msg.palette, msg.maxTypes) : msg.palette;
+    const cells = quantize(pixels, msg.width, msg.height, palette, { dither: msg.dither, mode: msg.ditherMode });
     scope.postMessage(
       { type: 'result', id: msg.id, width: msg.width, height: msg.height, cells, background: c ? c.info : null },
       [cells.buffer],

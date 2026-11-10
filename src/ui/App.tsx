@@ -1,36 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ATLAS_URL, BLOCKS, blockData, blockIndexById, defaultEnabledIds } from '../data';
-import type { BackgroundMode } from '../core/background';
+import { ATLAS_URL, BLOCKS, blockData, blockIndexById } from '../data';
 import { countBlocks, createGrid, History, resizeGrid, type Grid } from '../core/grid';
+import { layout } from '../core/layout';
 import { measureSummary, type Measurement } from '../core/measure';
-import type { ResizeMode } from '../core/resample';
-import { cellToBlockPos } from '../core/schem';
-import { AIR, faceOf, type Orientation } from '../core/types';
-import { ACCEPTED_TYPES, loadImageFile, type LoadedImage } from '../lib/image';
+import { parseSchem, schemToGrid } from '../core/schemRead';
+import { decodeGrid } from '../core/serialize';
+import type { ClipTransform } from '../core/shapes';
+import { AIR, type Orientation } from '../core/types';
+import { ACCEPTED_TYPES, isSchemFile, loadImageFile, type LoadedImage } from '../lib/image';
 import { loadJSON, saveJSON } from '../lib/storage';
 import type { BackgroundInfo } from '../worker/generate.worker';
 import { BlockPalettePanel } from './BlockPalettePanel';
-import { Editor, type Tool, type ViewMode } from './Editor';
+import { Editor, type EditorHandle, type SelectionInfo, type Tool, type ViewMode } from './Editor';
 import { ExportPanel, sanitizeName } from './ExportPanel';
+import { HistoryPanel } from './HistoryPanel';
 import { Icon } from './Icon';
 import { ImagePanel } from './ImagePanel';
 import { MaterialsList } from './MaterialsList';
-import { SettingsPanel } from './SettingsPanel';
-import { clampSize, MAX_SIDE, maxHeightFor, sizeFromHeight, sizeFromLongest, sizeFromWidth, type Size } from './size';
-import { Toolbar } from './Toolbar';
+import { MatchingPanel, SettingsPanel } from './SettingsPanel';
+import {
+  buildPalette, generationKeys, LAST_SETTINGS_KEY, loadLastSettings, sanitizeSettings, type ArtSettings, type GenerationKeys,
+} from './settings';
+import { clampSize, MAX_SIDE, MAX_WALL_HEIGHT, maxHeightFor, sizeFromHeight, sizeFromLongest, sizeFromWidth } from './size';
+import { ToolRail, Toolbar } from './Toolbar';
+import { useArtHistory } from './useArtHistory';
 import { useGenerator } from './useGenerator';
 
-const LS_ENABLED = 'mts.enabled.v1';
-const LS_ORIENTATION = 'mts.orientation';
-
-function useAtlas() {
-  const [atlas, setAtlas] = useState<HTMLImageElement | null>(null);
+function useLoadedImage(url: string | null) {
+  const [img, setImg] = useState<HTMLImageElement | null>(null);
   useEffect(() => {
-    const img = new Image();
-    img.onload = () => setAtlas(img);
-    img.src = ATLAS_URL;
-  }, []);
-  return atlas;
+    if (!url) return setImg(null);
+    let live = true;
+    const el = new Image();
+    el.onload = () => live && setImg(el);
+    el.src = url;
+    return () => {
+      live = false;
+    };
+  }, [url]);
+  return img;
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -53,38 +61,32 @@ function Logo() {
   );
 }
 
-const TOOL_KEYS: Record<string, Tool> = { b: 'brush', e: 'eraser', i: 'picker', g: 'fill', r: 'replace', m: 'measure' };
+const TOOL_KEYS: Record<string, Tool> = {
+  b: 'brush', e: 'eraser', i: 'picker', g: 'fill', r: 'replace', m: 'measure', l: 'line', u: 'rect', s: 'select',
+};
 const LS_RULERS = 'mts.rulers';
+const NO_SELECTION: SelectionInfo = { rect: null, floating: false, clipboard: false };
+
+const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 
 export default function App() {
-  const atlas = useAtlas();
+  const atlas = useLoadedImage(ATLAS_URL);
   const gen = useGenerator();
   const history = useRef(new History()).current;
+  const editorRef = useRef<EditorHandle>(null);
 
   const [image, setImage] = useState<LoadedImage | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
-  const [orientation, setOrientationState] = useState<Orientation>(() =>
-    loadJSON<Orientation>(LS_ORIENTATION, 'wall') === 'floor' ? 'floor' : 'wall',
-  );
-  const [size, setSize] = useState<Size>({ width: 64, height: 64 });
-  const [lockAspect, setLockAspect] = useState(true);
-  const [resize, setResize] = useState<ResizeMode>('smooth');
-  const [ditherOn, setDitherOn] = useState(false);
-  const [ditherStrength, setDitherStrength] = useState(0.8);
-  const [bgOn, setBgOn] = useState(false);
-  const [bgTolerance, setBgTolerance] = useState(15);
-  const [bgMode, setBgMode] = useState<BackgroundMode>('edges');
+  const [settings, setSettings] = useState<ArtSettings>(loadLastSettings);
+  const update = useCallback((patch: Partial<ArtSettings>) => setSettings((s) => ({ ...s, ...patch })), []);
+  useEffect(() => saveJSON(LAST_SETTINGS_KEY, settings), [settings]);
   const [bgInfo, setBgInfo] = useState<BackgroundInfo | null>(null);
-  const [enabled, setEnabledState] = useState<Set<string>>(() => {
-    const saved = loadJSON<string[] | null>(LS_ENABLED, null);
-    return new Set((Array.isArray(saved) ? saved : defaultEnabledIds()).filter((id) => blockIndexById.has(id)));
-  });
 
   const [grid, setGrid] = useState<Grid | null>(null);
   const [version, setVersion] = useState(0);
   const [edited, setEdited] = useState(false);
-  /** Settings the current grid was made with: everything except background removal, and background removal. */
-  const [lastGen, setLastGen] = useState<{ base: string; bg: string } | null>(null);
+  /** Settings the current grid was made with. */
+  const [lastGen, setLastGen] = useState<GenerationKeys | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // Undo step of our own background erase. While it is the newest step, a new erase replaces it (live slider)
   // and switching the option off takes it back. Ids survive undo/redo, so a redone erase is recognised again.
@@ -98,6 +100,7 @@ export default function App() {
 
   const [tool, setTool] = useState<Tool>('brush');
   const [brushSize, setBrushSize] = useState(1);
+  const [rectFilled, setRectFilled] = useState(false);
   const [currentBlock, setCurrentBlock] = useState(() => blockIndexById.get('white_concrete') ?? 0);
   const [recent, setRecent] = useState<number[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('textures');
@@ -107,50 +110,63 @@ export default function App() {
     setShowRulersState(v);
     saveJSON(LS_RULERS, v);
   };
+  const [overlayOn, setOverlayOn] = useState(false);
+  const [overlayOpacity, setOverlayOpacity] = useState(0.5);
+  const overlayImg = useLoadedImage(image?.url ?? null);
   const [measurement, setMeasurement] = useState<Measurement | null>(null);
+  const [selection, setSelection] = useState<SelectionInfo>(NO_SELECTION);
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [fitSignal, setFitSignal] = useState(0);
-  const [tab, setTab] = useState<'blocks' | 'materials'>('blocks');
+  const [tab, setTab] = useState<'blocks' | 'materials' | 'history'>('blocks');
   const [name, setName] = useState('pixel_art');
   const [dragOver, setDragOver] = useState(false);
 
+  const { orientation } = settings;
+  const enabled = useMemo(() => new Set(settings.enabled), [settings.enabled]);
+  const setEnabled = useCallback((next: Set<string>) => update({ enabled: [...next] }), [update]);
+
+  // ---- derived -----------------------------------------------------------------------------
+
+  const counts = useMemo(() => (grid ? countBlocks(grid) : new Map<number, number>()), [grid, version]);
+  const blockCount = useMemo(() => [...counts.values()].reduce((a, b) => a + b, 0), [counts]);
+
+  // ---- history (autosave) ------------------------------------------------------------------
+
+  const art = useArtHistory(
+    () => ({ name: sanitizeName(name), settings, grid, edited, hasImage: !!image, blockCount }),
+    setNotice,
+  );
+  useEffect(() => art.schedule(), [grid, version, settings, name, edited, image, art.schedule]);
+
   // ---- size --------------------------------------------------------------------------------
 
+  const size = { width: settings.width, height: settings.height };
   const maxH = maxHeightFor(orientation);
-  const aspect = image ? image.naturalHeight / image.naturalWidth : size.height / size.width;
+  const aspect = image ? image.naturalHeight / image.naturalWidth : settings.height / settings.width;
 
   const setWidth = (w: number) =>
-    setSize(lockAspect ? sizeFromWidth(w, aspect, MAX_SIDE, maxH) : clampSize({ width: w, height: size.height }, MAX_SIDE, maxH));
+    update(settings.lockAspect ? sizeFromWidth(w, aspect, MAX_SIDE, maxH) : clampSize({ width: w, height: settings.height }, MAX_SIDE, maxH));
   const setHeight = (h: number) =>
-    setSize(lockAspect ? sizeFromHeight(h, aspect, MAX_SIDE, maxH) : clampSize({ width: size.width, height: h }, MAX_SIDE, maxH));
+    update(settings.lockAspect ? sizeFromHeight(h, aspect, MAX_SIDE, maxH) : clampSize({ width: settings.width, height: h }, MAX_SIDE, maxH));
   const setLongest = (n: number) =>
-    setSize(lockAspect ? sizeFromLongest(n, aspect, MAX_SIDE, maxH) : clampSize({ width: n, height: n }, MAX_SIDE, maxH));
+    update(settings.lockAspect ? sizeFromLongest(n, aspect, MAX_SIDE, maxH) : clampSize({ width: n, height: n }, MAX_SIDE, maxH));
 
   const setOrientation = (o: Orientation) => {
-    setOrientationState(o);
-    saveJSON(LS_ORIENTATION, o);
     const mh = maxHeightFor(o);
-    if (size.height > mh) setSize(lockAspect ? sizeFromHeight(mh, aspect, MAX_SIDE, mh) : clampSize(size, MAX_SIDE, mh));
+    const patch: Partial<ArtSettings> = { orientation: o };
+    if (settings.height > mh) Object.assign(patch, settings.lockAspect ? sizeFromHeight(mh, aspect, MAX_SIDE, mh) : clampSize(size, MAX_SIDE, mh));
+    update(patch);
   };
-
-  const setEnabled = useCallback((next: Set<string>) => {
-    setEnabledState(next);
-    saveJSON(LS_ENABLED, [...next]);
-  }, []);
 
   // ---- generation --------------------------------------------------------------------------
 
-  const palette = useMemo(
-    () => BLOCKS.flatMap((b, i) => (enabled.has(b.id) ? [{ value: i, rgb: faceOf(b, orientation).rgb }] : [])),
-    [enabled, orientation],
-  );
+  const palette = useMemo(() => buildPalette(settings), [settings.enabled, settings.orientation, settings.smoothness]);
 
-  const background = bgOn ? { tolerance: bgTolerance / 100, mode: bgMode } : null;
-  const baseKey = image
-    ? JSON.stringify([image.key, size.width, size.height, orientation, resize, ditherOn ? ditherStrength : 0, palette.map((p) => p.value)])
-    : null;
-  const bgKey = JSON.stringify(background);
+  const background = settings.bgOn ? { tolerance: settings.bgTolerance / 100, mode: settings.bgMode } : null;
+  const keys = image ? generationKeys(image.key, settings) : null;
+  const baseKey = keys?.base ?? null;
+  const bgKey = keys?.bg ?? 'null';
   const genKey = baseKey && `${baseKey}|${bgKey}`;
   const lastGenKey = lastGen && `${lastGen.base}|${lastGen.bg}`;
 
@@ -163,26 +179,37 @@ export default function App() {
   const stale = !!genKey && edited && genKey !== lastGenKey && !eraseOnly;
 
   const runGenerate = () => {
-    if (!image || !baseKey || palette.length === 0) return;
-    const gen0 = { base: baseKey, bg: bgKey };
-    const req = { width: size.width, height: size.height, resize, dither: ditherOn ? ditherStrength : 0, palette, background };
-    gen.generate(req, (r) => {
-      setGrid({ width: r.width, height: r.height, cells: r.cells });
-      setBgInfo(r.background);
-      history.clear();
-      setVersion((v) => v + 1);
-      setEdited(false);
-      setEraseId(null);
-      setLastGen(gen0);
-    });
+    if (!image || !keys || palette.length === 0) return;
+    const gen0 = keys;
+    gen.generate(
+      {
+        width: settings.width,
+        height: settings.height,
+        resize: settings.resize,
+        dither: settings.dither === 'off' ? 0 : settings.ditherStrength,
+        ditherMode: settings.dither === 'ordered' ? 'ordered' : 'diffusion',
+        palette,
+        maxTypes: settings.maxTypesOn ? settings.maxTypes : 0,
+        background,
+      },
+      (r) => {
+        setGrid({ width: r.width, height: r.height, cells: r.cells });
+        setBgInfo(r.background);
+        history.clear();
+        setVersion((v) => v + 1);
+        setEdited(false);
+        setEraseId(null);
+        setLastGen(gen0);
+      },
+    );
   };
   const runRef = useRef(runGenerate);
   runRef.current = runGenerate;
 
   const runErase = () => {
-    if (!grid || !baseKey) return;
+    if (!grid || !keys) return;
     const target = grid;
-    const gen0 = { base: baseKey, bg: bgKey };
+    const gen0 = keys;
     if (!background) {
       // Switched off: take back our own erase; the manual edits underneath stay.
       if (eraseIsTop()) history.undo(target);
@@ -192,7 +219,7 @@ export default function App() {
       setLastGen(gen0);
       return;
     }
-    gen.backgroundMask({ width: target.width, height: target.height, resize, background }, (r) => {
+    gen.backgroundMask({ width: target.width, height: target.height, resize: settings.resize, background }, (r) => {
       // Replace the previous background erase instead of stacking, so lowering the tolerance restores cells.
       if (eraseIsTop()) history.undo(target);
       history.begin();
@@ -217,43 +244,88 @@ export default function App() {
 
   useEffect(() => {
     if (!notice) return;
-    const t = setTimeout(() => setNotice(null), 4000);
+    const t = setTimeout(() => setNotice(null), 5000);
     return () => clearTimeout(t);
   }, [notice]);
 
   // Blank canvas: resizing keeps the drawing (top-left anchored).
   useEffect(() => {
-    if (image || !grid || (grid.width === size.width && grid.height === size.height)) return;
-    setGrid(resizeGrid(grid, size.width, size.height));
+    if (image || !grid || (grid.width === settings.width && grid.height === settings.height)) return;
+    setGrid(resizeGrid(grid, settings.width, settings.height));
     history.clear();
     setVersion((v) => v + 1);
-  }, [image, grid, size, history]);
+  }, [image, grid, settings.width, settings.height, history]);
 
-  // ---- image / canvas lifecycle ------------------------------------------------------------
+  // ---- art lifecycle -----------------------------------------------------------------------
 
-  const confirmDiscard = () => !edited || window.confirm('Discard your manual edits?');
+  // Without browser storage there is no history to fall back on, so ask before throwing edits away.
+  const confirmDiscard = () => art.available === true || !edited || window.confirm('Discard your manual edits?');
+
+  const replaceImage = (img: LoadedImage | null) => {
+    gen.cancel(); // a result for the previous image must not land on the new art
+    setImage((prev) => {
+      if (prev && prev !== img) URL.revokeObjectURL(prev.url);
+      return img;
+    });
+    gen.setSource(img ? img.pixels : null);
+    if (!img) setOverlayOn(false);
+  };
+
+  /** Shows a grid as the whole art: clears undo, edits and generation state. */
+  const showGrid0 = (g: Grid | null, opts: { edited?: boolean; lastGen?: GenerationKeys | null } = {}) => {
+    setGrid(g);
+    history.clear();
+    setVersion((v) => v + 1);
+    setEdited(opts.edited ?? false);
+    setEraseId(null);
+    setLastGen(opts.lastGen ?? null);
+    setBgInfo(null);
+    setMeasurement(null);
+    setFitSignal((n) => n + 1);
+  };
+
+  const openSchemFile = async (file: File) => {
+    try {
+      const parsed = await parseSchem(new Uint8Array(await file.arrayBuffer()));
+      const r = schemToGrid(parsed, BLOCKS, { maxSide: MAX_SIDE, maxWallHeight: MAX_WALL_HEIGHT });
+      if (!confirmDiscard()) return;
+      await art.flush();
+      setImageError(null);
+      replaceImage(null);
+      update({ orientation: r.orientation, facing: r.facing, width: r.grid.width, height: r.grid.height, lockAspect: true });
+      showGrid0(r.grid);
+      setName(sanitizeName(parsed.name || file.name));
+      art.begin(null);
+      const unknown = [...r.unknown.values()].reduce((a, b) => a + b, 0);
+      setNotice(
+        `Opened ${r.grid.width} × ${r.grid.height} ${r.orientation}` +
+          (r.orientation === 'wall' ? ` facing ${r.facing}` : '') +
+          (unknown ? `. ${plural(unknown, 'block')} of ${plural(r.unknown.size, 'unsupported type')} became air.` : '.'),
+      );
+    } catch (e) {
+      setImageError(`Couldn’t open “${file.name}”: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
 
   const onFile = async (file: File) => {
+    if (isSchemFile(file)) return openSchemFile(file);
     if (!ACCEPTED_TYPES.includes(file.type)) {
-      setImageError(`“${file.name}” is not a PNG, JPG, GIF or WebP image.`);
+      setImageError(`“${file.name}” is not a PNG, JPG, GIF or WebP image, or a .schem file.`);
       return;
     }
     if (!confirmDiscard()) return;
     try {
       const img = await loadImageFile(file);
+      await art.flush();
       setImageError(null);
-      setImage((prev) => {
-        if (prev) URL.revokeObjectURL(prev.url);
-        return img;
-      });
-      gen.setSource(img.pixels);
-      setEdited(false);
-      setEraseId(null);
-      setLastGen(null);
+      replaceImage(img);
+      // The old grid must not be saved under the new art: show nothing until the first generation is done.
+      showGrid0(null);
       setName(sanitizeName(file.name));
-      if (lockAspect) {
-        setSize((s) => sizeFromLongest(Math.max(s.width, s.height), img.naturalHeight / img.naturalWidth, MAX_SIDE, maxH));
+      if (settings.lockAspect) {
+        update(sizeFromLongest(Math.max(settings.width, settings.height), img.naturalHeight / img.naturalWidth, MAX_SIDE, maxH));
       }
+      art.begin({ blob: file, name: file.name, type: file.type });
     } catch (e) {
       setImageError(`Couldn’t read “${file.name}”: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -261,23 +333,86 @@ export default function App() {
   const onFileRef = useRef(onFile);
   onFileRef.current = onFile;
 
-  const startBlank = () => {
+  const startBlank = async () => {
     if (!confirmDiscard()) return;
-    setImage((prev) => {
-      if (prev) URL.revokeObjectURL(prev.url);
-      return null;
-    });
-    gen.setSource(null);
-    setGrid(createGrid(size.width, size.height));
-    history.clear();
-    setVersion((v) => v + 1);
-    setEdited(false);
-    setEraseId(null);
-    setLastGen(null);
+    await art.flush();
+    replaceImage(null);
+    showGrid0(createGrid(settings.width, settings.height));
     setName('pixel_art');
+    art.begin(null);
   };
 
-  // Drop an image anywhere on the page.
+  const openArt = async (id: string) => {
+    if (id === art.currentId) return;
+    editorRef.current?.commitFloating();
+    try {
+      const rec = await art.open(id);
+      if (!rec) {
+        setNotice('That art is no longer in the history.');
+        return;
+      }
+      const { grid: g, missing } = decodeGrid(rec.data.grid, blockIndexById);
+      const s = { ...sanitizeSettings(rec.data.settings, settings), width: g.width, height: g.height };
+      let img: LoadedImage | null = null;
+      let imageLost = false;
+      if (rec.source) {
+        try {
+          img = await loadImageFile(new File([rec.source.blob], rec.source.name, { type: rec.source.type }));
+        } catch {
+          imageLost = true;
+        }
+      }
+      // Everything below happens in one render, so the autosave never sees a half-opened art.
+      setImageError(null);
+      replaceImage(img);
+      setSettings(s);
+      showGrid0(g, { edited: rec.data.edited, lastGen: img ? generationKeys(img.key, s) : null });
+      setName(rec.meta.name);
+      art.adopt(rec.meta, { name: rec.meta.name, settings: s, edited: rec.data.edited }, g);
+      const missingCount = [...missing.values()].reduce((a, b) => a + b, 0);
+      if (missingCount) setNotice(`${plural(missingCount, 'block')} that this Minecraft version doesn’t have became air.`);
+      else if (imageLost) setNotice('The original image couldn’t be loaded. The blocks are kept.');
+    } catch (e) {
+      setNotice(`Couldn’t open that art: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  const deleteArt = async (id: string) => {
+    const wasCurrent = id === art.currentId;
+    await art.remove(id);
+    if (wasCurrent) {
+      replaceImage(null);
+      showGrid0(null);
+      setName('pixel_art');
+    }
+  };
+
+  // Reopen the latest art once the history is ready (unless something was opened in the meantime).
+  const restored = useRef(false);
+  useEffect(() => {
+    if (art.available === null || restored.current) return;
+    restored.current = true;
+    if (art.available && art.list.length && !grid && !image) void openArt(art.list[0].id);
+  }, [art.available]);
+
+  // Save when the tab is hidden or closed; without storage, warn before losing edits.
+  const editedRef = useRef(edited);
+  editedRef.current = edited;
+  useEffect(() => {
+    const hidden = () => document.visibilityState === 'hidden' && void art.flush();
+    const unload = (e: BeforeUnloadEvent) => {
+      void art.flush();
+      if (art.available === false && editedRef.current) e.preventDefault();
+    };
+    document.addEventListener('visibilitychange', hidden);
+    window.addEventListener('beforeunload', unload);
+    return () => {
+      document.removeEventListener('visibilitychange', hidden);
+      window.removeEventListener('beforeunload', unload);
+    };
+  }, [art.flush, art.available]);
+
+  // Drop an image or schematic anywhere on the page.
   useEffect(() => {
     const hasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
     const over = (e: DragEvent) => {
@@ -293,7 +428,7 @@ export default function App() {
       e.preventDefault();
       setDragOver(false);
       const f = e.dataTransfer?.files?.[0];
-      if (f) onFileRef.current(f);
+      if (f) void onFileRef.current(f);
     };
     window.addEventListener('dragover', over);
     window.addEventListener('dragleave', leave);
@@ -327,14 +462,18 @@ export default function App() {
     if (tool === 'picker' || tool === 'eraser') setTool('brush');
   };
 
+  // A floating selection is not on the grid yet: undo/redo drop it first.
   const undo = () => {
+    if (editorRef.current?.cancelFloating()) return;
     if (grid && history.undo(grid)) setVersion((v) => v + 1);
   };
   const redo = () => {
+    editorRef.current?.cancelFloating();
     if (grid && history.redo(grid)) setVersion((v) => v + 1);
   };
+  const transform = (op: ClipTransform) => editorRef.current?.transform(op);
 
-  // Keyboard shortcuts (ignored while typing in a field).
+  // Keyboard shortcuts (ignored while typing in a field). Selection keys live in the editor.
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyRef.current = (e: KeyboardEvent) => {
     // Ignore shortcuts only while typing; a focused checkbox, slider or button must not swallow Ctrl+Z.
@@ -353,6 +492,7 @@ export default function App() {
       else if (k === '[') setBrushSize((s) => Math.max(1, s - 1));
       else if (k === ']') setBrushSize((s) => Math.min(5, s + 1));
       else if (k === 'f') setFitSignal((n) => n + 1);
+      else if (k === 'o' && image) setOverlayOn((v) => !v);
     }
   };
   useEffect(() => {
@@ -361,15 +501,12 @@ export default function App() {
     return () => window.removeEventListener('keydown', h);
   }, []);
 
-  // ---- derived -----------------------------------------------------------------------------
-
-  const counts = useMemo(() => (grid ? countBlocks(grid) : new Map<number, number>()), [grid, version]);
-  const blockCount = useMemo(() => [...counts.values()].reduce((a, b) => a + b, 0), [counts]);
+  // ---- status ------------------------------------------------------------------------------
 
   let status: ReactNode = <span className="muted">Hover the canvas to inspect blocks</span>;
   if (grid && hover) {
     const v = grid.cells[hover.y * grid.width + hover.x];
-    const pos = cellToBlockPos(hover.x, hover.y, grid.height, orientation);
+    const pos = layout(grid.width, grid.height, orientation, settings.facing).blockPos(hover.x, hover.y);
     status = (
       <>
         <span className="num">
@@ -394,53 +531,64 @@ export default function App() {
 
       <aside className="sidebar left">
         <Section title="Image">
-          <ImagePanel image={image} onFile={onFile} onBlank={startBlank} error={imageError} />
+          <ImagePanel image={image} onFile={(f) => void onFile(f)} onBlank={() => void startBlank()} error={imageError} />
         </Section>
         <Section title="Size & style">
           <SettingsPanel
-            orientation={orientation}
+            settings={settings}
+            update={update}
             setOrientation={setOrientation}
-            size={size}
             setWidth={setWidth}
             setHeight={setHeight}
             setLongest={setLongest}
-            lockAspect={lockAspect}
-            setLockAspect={setLockAspect}
-            resize={resize}
-            setResize={setResize}
-            ditherOn={ditherOn}
-            setDitherOn={setDitherOn}
-            ditherStrength={ditherStrength}
-            setDitherStrength={setDitherStrength}
-            bgOn={bgOn}
-            setBgOn={setBgOn}
-            bgTolerance={bgTolerance}
-            setBgTolerance={setBgTolerance}
-            bgMode={bgMode}
-            setBgMode={setBgMode}
-            bgInfo={bgOn ? bgInfo : null}
+            bgInfo={settings.bgOn ? bgInfo : null}
             hasImage={!!image}
           />
         </Section>
+        {image && (
+          <Section title="Matching">
+            <MatchingPanel settings={settings} update={update} />
+          </Section>
+        )}
         <Section title="Export">
-          <ExportPanel grid={grid} orientation={orientation} blockCount={blockCount} name={name} setName={setName} />
+          <ExportPanel
+            grid={grid}
+            orientation={orientation}
+            facing={settings.facing}
+            setFacing={(facing) => update({ facing })}
+            blockCount={blockCount}
+            name={name}
+            setName={setName}
+            atlas={{ atlas, tileSize: blockData.tileSize, atlasColumns: blockData.atlasColumns }}
+          />
         </Section>
       </aside>
 
       <main className="workspace">
         <Toolbar
           tool={tool}
-          setTool={setTool}
           brushSize={brushSize}
           setBrushSize={setBrushSize}
+          rectFilled={rectFilled}
+          setRectFilled={setRectFilled}
           currentBlock={currentBlock}
           recent={recent}
           onSelectBlock={selectBlock}
           orientation={orientation}
-          canUndo={history.canUndo}
+          canUndo={history.canUndo || selection.floating}
           canRedo={history.canRedo}
           onUndo={undo}
           onRedo={redo}
+          selection={selection}
+          onCopy={() => editorRef.current?.copy()}
+          onCut={() => editorRef.current?.cut()}
+          onPaste={() => editorRef.current?.paste()}
+          onDelete={() => editorRef.current?.deleteSelection()}
+          hasOverlay={!!image}
+          overlayOn={overlayOn}
+          setOverlayOn={setOverlayOn}
+          overlayOpacity={overlayOpacity}
+          setOverlayOpacity={setOverlayOpacity}
           viewMode={viewMode}
           setViewMode={setViewMode}
           showGrid={showGrid}
@@ -450,58 +598,76 @@ export default function App() {
           onFit={() => setFitSignal((n) => n + 1)}
           disabled={!grid}
         />
-        <div className="stage">
-          {(stale || gen.error || notice) && (
-            <div className="stage-banners">
-              {notice && !stale && <div className="banner info">{notice}</div>}
-              {stale && (
-                <div className="banner">
-                  <span>Settings changed since your manual edits.</span>
-                  <button type="button" className="btn small primary" onClick={() => runRef.current()}>
-                    Regenerate
-                  </button>
-                  <span className="muted small">discards edits</span>
-                </div>
-              )}
-              {gen.error && <div className="banner">Generation failed: {gen.error}</div>}
-            </div>
-          )}
-          <Editor
-            grid={grid}
-            version={version}
-            blocks={BLOCKS}
-            orientation={orientation}
-            atlas={atlas}
-            tileSize={blockData.tileSize}
-            atlasColumns={blockData.atlasColumns}
-            viewMode={viewMode}
-            showGrid={showGrid}
-            showRulers={showRulers}
-            tool={tool}
-            brushSize={brushSize}
-            currentBlock={currentBlock}
-            history={history}
-            fitSignal={fitSignal}
-            onEdit={onEdit}
-            onPick={onPick}
-            onHover={setHover}
-            onZoom={setZoom}
-            onMeasure={setMeasurement}
-          />
-          {!grid && (
-            <div className="empty">
-              <Icon name="image" size={40} />
-              <p>
-                <strong>Drop an image here</strong> or choose one on the left.
-              </p>
-              <p className="muted small">It’s matched to Minecraft blocks right in your browser. Nothing is uploaded.</p>
-            </div>
-          )}
-          {gen.busy && <div className="busy">Generating…</div>}
+        <div className="work-row">
+          <ToolRail tool={tool} setTool={setTool} selection={selection} onTransform={transform} disabled={!grid} />
+          <div className="stage">
+            {(stale || gen.error || notice) && (
+              <div className="stage-banners">
+                {notice && !stale && <div className="banner info">{notice}</div>}
+                {stale && (
+                  <div className="banner">
+                    <span>Settings changed since your manual edits.</span>
+                    <button type="button" className="btn small primary" onClick={() => runRef.current()}>
+                      Regenerate
+                    </button>
+                    <span className="muted small">discards edits</span>
+                  </div>
+                )}
+                {gen.error && <div className="banner">Generation failed: {gen.error}</div>}
+              </div>
+            )}
+            <Editor
+              grid={grid}
+              version={version}
+              blocks={BLOCKS}
+              orientation={orientation}
+              atlas={atlas}
+              tileSize={blockData.tileSize}
+              atlasColumns={blockData.atlasColumns}
+              viewMode={viewMode}
+              showGrid={showGrid}
+              showRulers={showRulers}
+              tool={tool}
+              brushSize={brushSize}
+              rectFilled={rectFilled}
+              currentBlock={currentBlock}
+              history={history}
+              fitSignal={fitSignal}
+              overlay={overlayOn ? overlayImg : null}
+              overlayOpacity={overlayOpacity}
+              handleRef={editorRef}
+              onEdit={onEdit}
+              onPick={onPick}
+              onHover={setHover}
+              onZoom={setZoom}
+              onMeasure={setMeasurement}
+              onSelection={setSelection}
+              onToolChange={setTool}
+            />
+            {!grid && !image && (
+              <div className="empty">
+                <Icon name="image" size={40} />
+                <p>
+                  <strong>Drop an image here</strong> or choose one on the left.
+                </p>
+                <p className="muted small">
+                  It’s matched to Minecraft blocks right in your browser. Nothing is uploaded. You can also open a .schem to edit
+                  it{art.available ? ', and everything you make is kept in the History tab' : ''}.
+                </p>
+              </div>
+            )}
+            {(gen.busy || (image && !grid)) && <div className="busy">Generating…</div>}
+          </div>
         </div>
         <footer className="statusbar">
           <div className="status-left">
             {status}
+            {selection.rect && (
+              <span className="status-measure" title={selection.floating ? 'Click or Enter places it, Esc cancels' : 'Esc clears the selection'}>
+                <Icon name="select" size={14} /> {selection.rect.w} × {selection.rect.h}
+                {selection.floating ? ' · moving' : ''}
+              </span>
+            )}
             {measurement && (
               <span className="status-measure" title="Esc clears the measurement">
                 <Icon name="measure" size={14} /> {measureSummary(measurement, orientation)}
@@ -529,19 +695,30 @@ export default function App() {
           >
             Materials <span className="badge">{counts.size}</span>
           </button>
+          {art.available && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={tab === 'history'}
+              className={tab === 'history' ? 'is-active' : ''}
+              onClick={() => setTab('history')}
+            >
+              History <span className="badge">{art.list.length}</span>
+            </button>
+          )}
         </div>
         <div className="tab-body">
-          {tab === 'blocks' ? (
-            <BlockPalettePanel enabled={enabled} setEnabled={setEnabled} orientation={orientation} />
-          ) : (
-            <MaterialsList counts={counts} orientation={orientation} />
+          {tab === 'blocks' && <BlockPalettePanel enabled={enabled} setEnabled={setEnabled} orientation={orientation} />}
+          {tab === 'materials' && <MaterialsList counts={counts} orientation={orientation} />}
+          {tab === 'history' && art.available && (
+            <HistoryPanel list={art.list} currentId={art.currentId} onOpen={(id) => void openArt(id)} onDelete={(id) => void deleteArt(id)} />
           )}
         </div>
       </aside>
 
       {dragOver && (
         <div className="drop-overlay">
-          <div>Drop the image to load it</div>
+          <div>Drop an image or .schem to open it</div>
         </div>
       )}
     </div>

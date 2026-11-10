@@ -1,5 +1,5 @@
 import { useRef } from 'react';
-import { ACCEPTED_TYPES, type LoadedImage } from '../lib/image';
+import { ACCEPT_ATTR, type LoadedImage } from '../lib/image';
 import { Icon } from './Icon';
 
 interface Props {
@@ -18,7 +18,7 @@ export function ImagePanel({ image, onFile, onBlank, error }: Props) {
       <input
         ref={input}
         type="file"
-        accept={ACCEPTED_TYPES.join(',')}
+        accept={ACCEPT_ATTR}
         hidden
         onChange={(e) => {
           const f = e.target.files?.[0];
@@ -45,7 +45,7 @@ export function ImagePanel({ image, onFile, onBlank, error }: Props) {
           <span>
             <strong>Choose an image</strong> or drop it anywhere
           </span>
-          <span className="muted small">PNG, JPG, GIF or WebP · stays on your computer</span>
+          <span className="muted small">PNG, JPG, GIF or WebP, or a .schem to edit · stays on your computer</span>
         </button>
       )}
       <button type="button" className="link-btn small" onClick={onBlank}>
