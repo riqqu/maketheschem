@@ -1,0 +1,5 @@
+node_modules/
+dist/
+# Generated from your own Minecraft jar by `npm run extract` - Mojang assets, do not commit or publish.
+src/data/blocks.json
+public/atlas.png
