@@ -40,14 +40,24 @@ Other Minecraft versions: `npm run extract -- "<path to version jar>"` (add `--l
    |---|---|---|
    | Brush / Eraser | `B` / `E` | size 1–100, square or round; `[` `]` step the size |
    | Line / Rectangle | `L` / `U` | Shift snaps to 45° / a square. Line: width and square or round tip. Rectangle: outline or filled, outline thickness, corner radius, and drawing out from the middle block |
+   | Ellipse | `C` | drag out its box; Shift makes a circle. Outline or filled, outline thickness, and drawing out from the middle block. A circle of size n is the round brush of size n |
+   | Text | `T` | type the text in the options bar (the field takes the focus when you pick the tool), and it shows under the pointer; click to stamp it, with its top-left corner at the click, in the current block. A 5×7 pixel font with lowercase and accented Latin letters (á ő ű ç… ). **Scale** makes every pixel of the font that many blocks wide; `[` `]` step it |
    | Fill / Replace all | `G` / `R` | **Tolerance** also takes blocks of a similar colour, not only the clicked block; Fill can also **include diagonals** |
+   | Gradient | `D` | drag from where it starts, in the current block, to where it ends, in the **end block** picked in the options bar. It fills the area of identical blocks you pressed on, like a bucket, or the selection when you press inside one. It steps through the enabled blocks that lie between the two colours, so narrow them in the **Blocks** tab for a cleaner ramp. **Dithering**: *Off* for hard steps, *Smooth* (error diffusion) or *Pattern* (ordered) to blend them. Shift snaps the direction to 45° |
    | Pick block | `I` | or right-click / Alt+click with any tool; by default it switches back to the brush |
    | Select | `S` | drag to select, drag inside to move; `Ctrl+C` `Ctrl+X` `Ctrl+V` `Delete`, `Ctrl+A`; `Enter` places a moved or pasted part, `Esc` cancels. Air in a moved or pasted part is see-through unless you turn that off. |
    | Measure | `M` | see below |
 
    Each tool has its own options in the bar above the canvas, like the options bar in Photoshop. Size-like options open
-   a slider with a number box, preset sizes and a preview of what the brush or rectangle draws. The options are
-   remembered between sessions.
+   a slider with a number box, preset sizes and a preview of what the brush, rectangle, ellipse or text draws. The
+   options are remembered between sessions.
+
+   **Mirror painting.** The brush, eraser, line, rectangle and ellipse have two mirror buttons at the end of their
+   options: left–right and top–bottom, on one or both. Everything you draw is drawn at its reflection too (one undo
+   step), and the footprint under the pointer shows the copies. A dashed line marks each mirror, with a round handle
+   outside the art: drag it to move the line, in half-block steps, so it can run between two blocks or through the
+   middle of one (that column maps to itself). It goes back to the middle when the size changes. Reflections that fall
+   off the art are dropped.
 
    Flip and 180° turns work on the selection, or on the whole art when nothing is selected. A 90° turn needs a
    selection (turn whole builds with `//rotate` in game). `O` lays the source image over the blocks for comparison.
@@ -163,8 +173,9 @@ measures how noisy each texture is (for **Prefer smooth textures**). When that d
 ## Develop
 
 ```sh
-npm test           # core logic: matching, dithering, grid editing and shapes, avoiding blocks, build steps and progress,
-                   # NBT, .schem / .litematic, history encoding, mesh voxelizing and 3D export, /fill commands and data packs
+npm test           # core logic: matching, dithering, grid editing, shapes, mirroring, gradients and the pixel font, avoiding
+                   # blocks, build steps and progress, NBT, .schem / .litematic, history encoding, mesh voxelizing and
+                   # 3D export, /fill commands and data packs
 npm run typecheck
 npm run build
 ```

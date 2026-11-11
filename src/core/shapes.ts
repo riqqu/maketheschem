@@ -135,6 +135,35 @@ export function rectCells(grid: Grid, a: Cell, b: Cell, filled: boolean, thickne
   return out;
 }
 
+/**
+ * Is cell (x, y) inside the ellipse that fits `r`? Cell centres decide, with the radii trimmed by a quarter block
+ * exactly like the round brush, so a circle of size n is the round brush of size n.
+ */
+function inEllipse(x: number, y: number, r: Rect): boolean {
+  if (r.w <= 0 || r.h <= 0) return false;
+  const dx = (x + 0.5 - (r.x + r.w / 2)) / (r.w / 2 - 0.25);
+  const dy = (y + 0.5 - (r.y + r.h / 2)) / (r.h / 2 - 0.25);
+  return dx * dx + dy * dy <= 1 + 1e-9;
+}
+
+/**
+ * Cells of the ellipse that fits the rectangle between two corners, inside the grid: filled, or an outline
+ * `thickness` blocks wide (inwards). A square makes a circle.
+ */
+export function ellipseCells(grid: Grid, a: Cell, b: Cell, filled: boolean, thickness: number): number[] {
+  const r = rectBetween(a, b);
+  const t = Math.max(1, Math.round(thickness));
+  const inner: Rect = { x: r.x + t, y: r.y + t, w: r.w - 2 * t, h: r.h - 2 * t };
+  const out: number[] = [];
+  for (let y = Math.max(r.y, 0); y < Math.min(r.y + r.h, grid.height); y++) {
+    for (let x = Math.max(r.x, 0); x < Math.min(r.x + r.w, grid.width); x++) {
+      if (!inEllipse(x, y, r) || (!filled && inEllipse(x, y, inner))) continue;
+      out.push(y * grid.width + x);
+    }
+  }
+  return out;
+}
+
 /** Sets cells as one undo step. Returns true if anything changed. */
 export function paintCells(grid: Grid, history: History, cells: Iterable<number>, value: number): boolean {
   history.begin();

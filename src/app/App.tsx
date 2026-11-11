@@ -60,7 +60,7 @@ function useLoadedImage(url: string | null) {
 }
 
 const TOOL_KEYS: Record<string, Tool> = {
-  b: 'brush', e: 'eraser', i: 'picker', g: 'fill', r: 'replace', m: 'measure', l: 'line', u: 'rect', s: 'select',
+  b: 'brush', e: 'eraser', i: 'picker', g: 'fill', r: 'replace', m: 'measure', l: 'line', u: 'rect', c: 'ellipse', t: 'text', d: 'gradient', s: 'select',
 };
 const LS_RULERS = 'mts.rulers';
 const LS_MODE = 'mts.mode';
@@ -634,7 +634,10 @@ export default function App() {
       e.preventDefault();
       redo();
     } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-      if (TOOL_KEYS[k] && grid) setTool(TOOL_KEYS[k]);
+      if (TOOL_KEYS[k] && grid) {
+        e.preventDefault(); // else the letter is typed into the text field the text tool focuses
+        setTool(TOOL_KEYS[k]);
+      }
       else if (k === '[' || k === ']') stepToolSize(tool, toolOptions, setToolOption, k === ']' ? 1 : -1);
       else if (k === 'f') setFitSignal((n) => n + 1);
       else if (k === 'o' && image) setOverlayOn((v) => !v);
@@ -766,6 +769,7 @@ export default function App() {
                 tool={tool}
                 options={toolOptions}
                 currentBlock={currentBlock}
+                palette={palette}
                 history={history}
                 fitSignal={fitSignal}
                 overlay={overlayOn ? overlayImg : null}

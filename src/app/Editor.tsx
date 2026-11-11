@@ -1,21 +1,27 @@
 import { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
 import { brushRows, type BrushShape } from '../core/brush';
 import { CHUNK, DONE, isDone, type Built, type Steps } from '../core/build';
-import { floodFill, paintLine, replaceAll, type Grid, type History } from '../core/grid';
+import { floodFill, paintLine, regionCells, replaceAll, type Grid, type History } from '../core/grid';
+import { gradientFill } from '../core/gradient';
 import { lockAxis, rowLineDistance, type Cell, type Measurement } from '../core/measure';
+import { centerAxis, hasMirror, mirrored, mirrorStamps, snapAxis, withMirror, type Axes } from '../core/mirror';
+import { renderText, textCells, type TextBitmap } from '../core/pixelFont';
+import type { PaletteColor } from '../core/quantize';
 import {
-  clipRect, copyRegion, fillRect, inRect, intersectRect, lineCells, paintCells, rectBetween, rectCells, rectCorners, snapLine, snapSquare,
-  stampClip, transformClip, transformRegion, type Clip, type ClipTransform, type Rect,
+  clipRect, copyRegion, ellipseCells, fillRect, inRect, intersectRect, lineCells, paintCells, rectBetween, rectCells, rectCorners, snapLine,
+  snapSquare, stampClip, transformClip, transformRegion, type Clip, type ClipTransform, type Rect,
 } from '../core/shapes';
 import { similarBlocks } from '../core/similar';
 import { AIR, faceOf, type BlockInfo, type Orientation } from '../core/types';
 import { colorCanvas } from '../lib/render';
 import {
-  dashedRect, drawCheck, drawMeasurement, drawRulers, label, outlineBrush, outlineCells, RULER_H, RULER_W, screen, type Theme, type View,
+  axisAt, dashedRect, drawAxes, drawCheck, drawGradientGuide, drawMeasurement, drawRulers, label, outlineBrush, outlineCells,
+  RULER_H, RULER_W, screen, type AxisName, type Theme, type View,
 } from './editorDraw';
-import type { ToolOptions } from './toolOptions';
+import { MIRROR_TOOLS, type ToolOptions } from './toolOptions';
 
-export type Tool = 'brush' | 'eraser' | 'picker' | 'fill' | 'replace' | 'measure' | 'line' | 'rect' | 'select';
+export type Tool =
+  | 'brush' | 'eraser' | 'picker' | 'fill' | 'replace' | 'measure' | 'line' | 'rect' | 'ellipse' | 'gradient' | 'text' | 'select';
 export type ViewMode = 'textures' | 'colors';
 
 export interface SelectionInfo {
@@ -65,6 +71,8 @@ interface Props {
   tool: Tool;
   options: ToolOptions;
   currentBlock: number;
+  /** The blocks the generator may use, which a gradient steps through. */
+  palette: readonly PaletteColor[];
   history: History;
   fitSignal: number;
   /** Source image drawn over the blocks for comparison, or null. */
@@ -94,6 +102,8 @@ const DIM_ALPHA = 0.72;
 const DONE_ALPHA = 0.4;
 /** Smallest section on screen, in pixels, that still gets a tick when it is done. */
 const CHECK_MIN_PX = 28;
+/** A gradient is previewed as blocks while it covers at most this many cells; bigger ones only show their direction. */
+const GRADIENT_PREVIEW_MAX = 50_000;
 
 interface Floating {
   clip: Clip;
@@ -108,6 +118,9 @@ type Drag =
   | { kind: 'paint'; lx: number; ly: number; value: number; size: number; shape: BrushShape }
   | { kind: 'measure' }
   | { kind: 'shape'; a: Cell; b: Cell }
+  /** `area` is what the gradient fills; `result` its blocks (one per cell of the area) once it has a direction. */
+  | { kind: 'gradient'; a: Cell; b: Cell; area: number[]; result: Uint16Array | null }
+  | { kind: 'axis'; axis: AxisName }
   | { kind: 'select'; a: Cell }
   | { kind: 'move'; dx: number; dy: number };
 
@@ -138,6 +151,11 @@ export function Editor(props: Props) {
   const space = useRef(false);
   const frame = useRef(0);
   const fittedFor = useRef('');
+  /** Where the mirror lines were dragged to (see Axes); null = through the middle of the art. */
+  const axisPos = useRef<{ x: number | null; y: number | null }>({ x: null, y: null });
+  /** The mirror line whose handle is under the pointer. */
+  const axisHover = useRef<AxisName | null>(null);
+  const textCache = useRef<{ key: string; bitmap: TextBitmap | null }>({ key: '', bitmap: null });
   const theme = useRef<Theme>({
     checkA: '#d9dce2',
     checkB: '#c9cdd5',
@@ -236,12 +254,31 @@ export function Editor(props: Props) {
       }
     }
 
-    // Line / rectangle preview.
+    // Previews of what the drag, or the next click, would paint.
     const d = drag.current;
+    const axes = axesFor(p, g);
+    const inView = (x: number, y: number) => x >= x0 && x < x1 && y >= y0 && y < y1;
     if (d?.kind === 'shape') {
-      for (const i of shapeCells(g, d.a, d.b)) {
+      for (const i of withMirror(shapeCells(g, d.a, d.b), g.width, g.height, axes)) {
         const x = i % g.width, y = (i - x) / g.width;
-        if (x >= x0 && x < x1 && y >= y0 && y < y1) drawBlock(p.currentBlock, x, y, 0.85);
+        if (inView(x, y)) drawBlock(p.currentBlock, x, y, 0.85);
+      }
+    }
+    if (d?.kind === 'gradient' && d.result) {
+      const blocks = d.result;
+      d.area.forEach((i, k) => {
+        const x = i % g.width, y = (i - x) / g.width;
+        if (inView(x, y)) drawBlock(blocks[k], x, y);
+      });
+    }
+    const pointer = hover.current;
+    if (p.tool === 'text' && pointer && !p.build && !space.current && !d) {
+      const text = textBitmap(p);
+      if (text) {
+        for (const i of textCells(text, g.width, g.height, pointer.x, pointer.y)) {
+          const x = i % g.width, y = (i - x) / g.width;
+          if (inView(x, y)) drawBlock(p.currentBlock, x, y, 0.85);
+        }
       }
     }
 
@@ -348,18 +385,30 @@ export function Editor(props: Props) {
       }
     }
 
-    // Tool footprint under the cursor.
+    // Tool footprint under the cursor, and its mirror images.
     const h = hover.current;
-    const footprint = p.tool !== 'select' && p.tool !== 'measure' && !p.build;
-    if (h && footprint && !space.current && d?.kind !== 'pan' && d?.kind !== 'shape') {
+    const footprint = p.tool !== 'select' && p.tool !== 'measure' && p.tool !== 'text' && !p.build;
+    if (h && footprint && !space.current && d?.kind !== 'pan' && d?.kind !== 'shape' && d?.kind !== 'gradient' && d?.kind !== 'axis') {
       const pen = penOf(p);
-      outlineBrush(ctx, v, h.x, h.y, brushRows(pen?.size ?? 1, pen?.shape));
+      const rows = brushRows(pen?.size ?? 1, pen?.shape);
+      outlineBrush(ctx, v, h.x, h.y, rows);
+      for (const s of mirrorStamps(h.x, h.y, rows, axes)) outlineBrush(ctx, v, s.x, s.y, s.rows);
     }
     if (d?.kind === 'shape') {
-      const [c0, c1] = p.tool === 'rect' ? rectCorners(d.a, d.b, p.options.rect.fromCenter) : [d.a, d.b];
+      const fromCenter = (p.tool === 'ellipse' ? p.options.ellipse : p.options.rect).fromCenter;
+      const [c0, c1] = p.tool === 'line' ? [d.a, d.b] : rectCorners(d.a, d.b, fromCenter);
       const r = rectBetween(c0, c1);
       label(ctx, `${r.w} × ${r.h}`, sx(d.b.x + 1) + 8, sy(d.b.y) - 28, { top: p.showRulers ? RULER_H : 0, right: cw - (p.showRulers ? RULER_W : 0), bottom: ch });
     }
+    if (d?.kind === 'gradient') {
+      const colour = (value: number) => {
+        const c = rgb[value] ?? [128, 128, 128];
+        return `rgb(${c[0]},${c[1]},${c[2]})`;
+      };
+      const end = p.blocks.findIndex((b) => b.id === p.options.gradient.to);
+      drawGradientGuide(ctx, v, d.a, d.b, colour(p.currentBlock), colour(end >= 0 ? end : p.currentBlock));
+    }
+    if (hasMirror(axes)) drawAxes(ctx, v, g, axes, t.accent, p.showRulers);
 
     if (measure.current) drawMeasurement(ctx, v, measure.current, p.showRulers);
 
@@ -375,9 +424,37 @@ export function Editor(props: Props) {
   const shapeCells = (g: Grid, a: Cell, b: Cell) => {
     const { tool, options } = propsRef.current;
     if (tool === 'line') return lineCells(g, a, b, options.line.size, options.line.shape);
+    if (tool === 'ellipse') {
+      const { filled, thickness, fromCenter } = options.ellipse;
+      const [c0, c1] = rectCorners(a, b, fromCenter);
+      return ellipseCells(g, c0, c1, filled, thickness);
+    }
     const { filled, thickness, rounding, fromCenter } = options.rect;
     const [c0, c1] = rectCorners(a, b, fromCenter);
     return rectCells(g, c0, c1, filled, thickness, rounding);
+  };
+
+  /** The mirror lines the current tool paints with: where each is, or null for none. */
+  const axesFor = (p: Props, g: Grid): Axes => {
+    const on = !p.build && MIRROR_TOOLS.includes(p.tool) ? p.options.mirror : { x: false, y: false };
+    const at = axisPos.current;
+    return { x: on.x ? at.x ?? centerAxis(g.width) : null, y: on.y ? at.y ?? centerAxis(g.height) : null };
+  };
+
+  /** The text tool's text as blocks, kept until the text or its scale changes. */
+  const textBitmap = (p: Props): TextBitmap | null => {
+    const { value, scale } = p.options.text;
+    const key = `${scale}|${value}`;
+    if (textCache.current.key !== key) textCache.current = { key, bitmap: renderText(value, scale) };
+    return textCache.current.bitmap;
+  };
+
+  /** The blocks of a gradient being dragged out, one per cell of its area; null until it has a direction. */
+  const gradientBlocks = (p: Props, g: Grid, d: { a: Cell; b: Cell; area: number[] }): Uint16Array | null => {
+    const end = p.blocks.findIndex((b) => b.id === p.options.gradient.to);
+    if (end < 0 || (d.a.x === d.b.x && d.a.y === d.b.y)) return null;
+    const colour = (value: number): PaletteColor => ({ value, rgb: faceOf(p.blocks[value], p.orientation).rgb });
+    return gradientFill(g.width, d.area, d.a, d.b, colour(p.currentBlock), colour(end), p.palette, p.options.gradient.dither);
   };
 
   /** Which cells a click of fill / replace treats as the clicked block: the same block, or ones close in colour. */
@@ -585,6 +662,7 @@ export function Editor(props: Props) {
     let cursor = 'crosshair';
     if (d?.kind === 'pan') cursor = 'grabbing';
     else if (space.current) cursor = 'grab';
+    else if (d?.kind === 'axis' || axisHover.current) cursor = (d?.kind === 'axis' ? d.axis : axisHover.current) === 'x' ? 'ew-resize' : 'ns-resize';
     else if (d?.kind === 'move') cursor = 'move';
     else if (propsRef.current.build) cursor = hover.current ? 'pointer' : 'default';
     else if (propsRef.current.tool === 'select' && hover.current) {
@@ -655,6 +733,7 @@ export function Editor(props: Props) {
     const key = g ? `${g.width}x${g.height}` : '';
     if (key !== fittedFor.current) {
       fittedFor.current = key;
+      axisPos.current = { x: null, y: null }; // the mirror lines go back to the middle of the new size
       if (measure.current) setMeasure(null);
       if (key) fit();
     }
@@ -731,7 +810,7 @@ export function Editor(props: Props) {
       const ctrl = e.ctrlKey || e.metaKey;
       const k = e.key.toLowerCase();
       if (e.key === 'Escape') {
-        if (drag.current?.kind === 'shape' || drag.current?.kind === 'select') {
+        if (drag.current?.kind === 'shape' || drag.current?.kind === 'gradient' || drag.current?.kind === 'select') {
           drag.current = null;
           requestDraw();
         } else if (cancelFloating()) {
@@ -831,6 +910,18 @@ export function Editor(props: Props) {
       return;
     }
 
+    // A mirror line is moved by its handle.
+    if (e.button === 0) {
+      const axes = axesFor(p, g);
+      const { mx, my } = local(e);
+      const hit = hasMirror(axes) ? axisAt(view.current, axes, mx, my, p.showRulers) : null;
+      if (hit) {
+        drag.current = { kind: 'axis', axis: hit };
+        updateCursor();
+        return;
+      }
+    }
+
     // The select tool may grab a floating piece hanging over the edge.
     if (p.tool === 'select' && e.button === 0) {
       const f = floating.current;
@@ -874,13 +965,24 @@ export function Editor(props: Props) {
       const value = p.tool === 'eraser' ? AIR : p.currentBlock;
       const pen = penOf(p)!;
       p.history.begin();
-      paintLine(g, p.history, c.x, c.y, c.x, c.y, pen.size, value, pen.shape);
+      paintLine(g, mirrored(p.history, axesFor(p, g)), c.x, c.y, c.x, c.y, pen.size, value, pen.shape);
       drag.current = { kind: 'paint', lx: c.x, ly: c.y, value, size: pen.size, shape: pen.shape };
       colorDirty.current = true;
       requestDraw();
-    } else if (p.tool === 'line' || p.tool === 'rect') {
+    } else if (p.tool === 'line' || p.tool === 'rect' || p.tool === 'ellipse') {
       drag.current = { kind: 'shape', a: c, b: c };
       requestDraw();
+    } else if (p.tool === 'gradient') {
+      // Pressing inside a selection fills the selection; elsewhere it fills the region of identical blocks, like a bucket.
+      const sel = selection.current ? clipRect(selection.current, g.width, g.height) : null;
+      const area = sel && inRect(sel, c)
+        ? rectCells(g, { x: sel.x, y: sel.y }, { x: sel.x + sel.w - 1, y: sel.y + sel.h - 1 }, true, 1)
+        : regionCells(g, c.x, c.y);
+      drag.current = { kind: 'gradient', a: c, b: c, area, result: null };
+      requestDraw();
+    } else if (p.tool === 'text') {
+      const text = textBitmap(p);
+      if (text && paintCells(g, p.history, textCells(text, g.width, g.height, c.x, c.y), p.currentBlock)) edited();
     } else if (p.tool === 'fill') {
       const { diagonal, tolerance } = p.options.fill;
       if (floodFill(g, p.history, c.x, c.y, p.currentBlock, { diagonal, similar: similarFor(tolerance) }) > 0) edited();
@@ -910,7 +1012,24 @@ export function Editor(props: Props) {
       updateCursor();
       requestDraw();
     }
-    if (d?.kind === 'measure' && measure.current) {
+    if (!d) {
+      const { mx, my } = local(e);
+      const axes = axesFor(p, g);
+      const over = hasMirror(axes) ? axisAt(view.current, axes, mx, my, p.showRulers) : null;
+      if (over !== axisHover.current) {
+        axisHover.current = over;
+        updateCursor();
+      }
+    }
+    if (d?.kind === 'axis') {
+      const { mx, my } = local(e);
+      const v = view.current;
+      const k = d.axis === 'x' ? snapAxis((mx - v.ox) / v.scale, g.width) : snapAxis((my - v.oy) / v.scale, g.height);
+      if (axisPos.current[d.axis] !== k) {
+        axisPos.current[d.axis] = k;
+        requestDraw();
+      }
+    } else if (d?.kind === 'measure' && measure.current) {
       const a = measure.current.a;
       let b = clampCell(g, c);
       if (e.shiftKey) b = lockAxis(a, b);
@@ -919,7 +1038,7 @@ export function Editor(props: Props) {
       const x = clamp(c.x, -d.size, g.width + d.size);
       const y = clamp(c.y, -d.size, g.height + d.size);
       if (x !== d.lx || y !== d.ly) {
-        paintLine(g, p.history, d.lx, d.ly, x, y, d.size, d.value, d.shape);
+        paintLine(g, mirrored(p.history, axesFor(p, g)), d.lx, d.ly, x, y, d.size, d.value, d.shape);
         d.lx = x;
         d.ly = y;
         colorDirty.current = true;
@@ -930,6 +1049,14 @@ export function Editor(props: Props) {
       if (e.shiftKey) b = p.tool === 'line' ? snapLine(d.a, b) : snapSquare(d.a, b);
       if (b.x !== d.b.x || b.y !== d.b.y) {
         d.b = b;
+        requestDraw();
+      }
+    } else if (d?.kind === 'gradient') {
+      let b = clampCell(g, c);
+      if (e.shiftKey) b = snapLine(d.a, b);
+      if (b.x !== d.b.x || b.y !== d.b.y) {
+        d.b = b;
+        d.result = d.area.length <= GRADIENT_PREVIEW_MAX ? gradientBlocks(p, g, d) : null;
         requestDraw();
       }
     } else if (d?.kind === 'select') {
@@ -959,7 +1086,15 @@ export function Editor(props: Props) {
     drag.current = null;
     const g = p.grid;
     if (d?.kind === 'paint' && g && p.history.commit(g)) p.onEdit();
-    if (d?.kind === 'shape' && g && paintCells(g, p.history, shapeCells(g, d.a, d.b), p.currentBlock)) edited();
+    if (d?.kind === 'shape' && g && paintCells(g, p.history, withMirror(shapeCells(g, d.a, d.b), g.width, g.height, axesFor(p, g)), p.currentBlock)) edited();
+    if (d?.kind === 'gradient' && g) {
+      const blocks = d.result ?? gradientBlocks(p, g, d);
+      if (blocks) {
+        p.history.begin();
+        d.area.forEach((i, k) => p.history.set(g, i, blocks[k]));
+        if (p.history.commit(g)) edited();
+      }
+    }
     // A click without dragging clears the measurement / selection.
     const m = measure.current;
     if (d?.kind === 'measure' && m && m.a.x === m.b.x && m.a.y === m.b.y) setMeasure(null);
@@ -973,6 +1108,10 @@ export function Editor(props: Props) {
   };
 
   const onPointerLeave = () => {
+    if (axisHover.current) {
+      axisHover.current = null;
+      updateCursor();
+    }
     if (hover.current) {
       hover.current = null;
       propsRef.current.onHover(null);

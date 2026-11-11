@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { brushCells, countBlocks, createGrid, floodFill, History, paintLine, replaceAll, resizeGrid } from './grid';
+import { brushCells, countBlocks, createGrid, floodFill, History, paintLine, regionCells, replaceAll, resizeGrid } from './grid';
 import { AIR } from './types';
 
 const rows = (g: { width: number; cells: Uint16Array }) =>
@@ -96,6 +96,35 @@ describe('floodFill', () => {
     g.cells.set([AIR, 1, AIR]);
     expect(floodFill(g, new History(), 0, 0, 4, { similar })).toBe(1);
     expect([...g.cells]).toEqual([4, 1, AIR]);
+  });
+});
+
+describe('regionCells', () => {
+  it('lists the connected region and leaves the grid alone', () => {
+    const g = createGrid(3, 3, 0);
+    g.cells.set([0, 1, 0, 1, 1, 0, 0, 0, 1]);
+    expect(regionCells(g, 2, 0).sort()).toEqual([2, 5]);
+    expect([...g.cells]).toEqual([0, 1, 0, 1, 1, 0, 0, 0, 1]);
+    expect(regionCells(g, 1, 1).sort()).toEqual([1, 3, 4]);
+  });
+
+  it('can spread across corners and over similar blocks', () => {
+    const g = createGrid(3, 3, 0);
+    g.cells.set([0, 1, 1, 1, 0, 1, 1, 1, 0]);
+    expect(regionCells(g, 0, 0)).toEqual([0]);
+    expect(regionCells(g, 0, 0, { diagonal: true }).sort()).toEqual([0, 4, 8]);
+    const similar = (a: number, b: number) => a !== 0 && b !== 0;
+    // The top-right and the bottom-left blocks only touch at corners.
+    expect(regionCells(g, 1, 0, { similar }).sort()).toEqual([1, 2, 5]);
+    expect(regionCells(g, 1, 0, { similar, diagonal: true }).sort()).toEqual([1, 2, 3, 5, 6, 7]);
+  });
+
+  it('covers what a flood fill changes', () => {
+    const g = createGrid(5, 5, 0);
+    g.cells.set([0, 0, 1, 0, 0, 0, 1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 1, 0]);
+    const region = regionCells(g, 0, 0);
+    expect(floodFill(g, new History(), 0, 0, 9)).toBe(region.length);
+    expect(region.every((i) => g.cells[i] === 9)).toBe(true);
   });
 });
 

@@ -15,17 +15,19 @@ interface Props {
   recent?: number[];
   disabled?: boolean;
   placeholder?: string;
+  /** Accessible name, for when there is more than one picker on screen. */
+  label?: string;
   className?: string;
 }
 
 /** A button showing the chosen block that opens a searchable grid of every usable block (not only the enabled ones). */
-export function BlockPicker({ value, onSelect, orientation, recent = [], disabled, placeholder = 'Air', className }: Props) {
+export function BlockPicker({ value, onSelect, orientation, recent = [], disabled, placeholder = 'Air', label = 'Block', className }: Props) {
   const [open, setOpen] = useState(false);
   const block = value === null ? null : BLOCKS[value] ?? null;
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="outline" disabled={disabled} className={cn('w-48 justify-start gap-2 pl-1.5', className)} aria-label="Block">
+        <Button variant="outline" disabled={disabled} className={cn('w-48 justify-start gap-2 pl-1.5', className)} aria-label={label}>
           <BlockSwatch block={block} orientation={orientation} size={20} />
           <span className="flex-1 truncate text-left @max-[720px]:hidden">{block?.name ?? placeholder}</span>
           <ChevronDown className="text-muted-foreground" />

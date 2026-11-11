@@ -121,9 +121,12 @@ export function brushCells(grid: Grid, x: number, y: number, size: number, shape
   return out;
 }
 
+/** Anything that can set a cell inside an undo step: the History itself, or one that also sets mirrored cells. */
+export type CellSetter = Pick<History, 'set'>;
+
 /** Paints a brush stroke segment from (x0,y0) to (x1,y1) without gaps (Bresenham). */
 export function paintLine(
-  grid: Grid, history: History, x0: number, y0: number, x1: number, y1: number, size: number, value: number,
+  grid: Grid, history: CellSetter, x0: number, y0: number, x1: number, y1: number, size: number, value: number,
   shape: BrushShape = 'square',
 ): boolean {
   let changed = false;
@@ -152,20 +155,29 @@ export interface FillOptions {
 
 /** Flood fill of the region containing (x, y). Returns the number of cells changed. */
 export function floodFill(grid: Grid, history: History, x: number, y: number, value: number, opts: FillOptions = {}): number {
+  if (grid.cells[y * grid.width + x] === value && !opts.similar) return 0;
+  const region = regionCells(grid, x, y, opts);
+  history.begin();
+  let count = 0;
+  for (const i of region) if (history.set(grid, i, value)) count++;
+  history.commit(grid);
+  return count;
+}
+
+/** Indices of the connected region containing (x, y): what a flood fill from there would cover. */
+export function regionCells(grid: Grid, x: number, y: number, opts: FillOptions = {}): number[] {
   const { width, height, cells } = grid;
   const { diagonal = false, similar } = opts;
   const seed = cells[y * width + x];
-  if (seed === value && !similar) return 0;
   const inRegion = similar ? (v: number) => v === seed || similar(v, seed) : (v: number) => v === seed;
-  history.begin();
-  let count = 0;
-  // Filled cells may still match the seed (a similar block), so mark visited cells instead of relying on the change.
+  const out: number[] = [];
+  // Mark visited cells instead of relying on the cells' values: a filled cell may still look like the seed.
   const seen = new Uint8Array(width * height);
   const stack = [y * width + x];
   seen[stack[0]] = 1;
   while (stack.length) {
     const i = stack.pop()!;
-    if (history.set(grid, i, value)) count++;
+    out.push(i);
     const cx = i % width, cy = (i - cx) / width;
     for (let dy = -1; dy <= 1; dy++) {
       const ny = cy + dy;
@@ -181,8 +193,7 @@ export function floodFill(grid: Grid, history: History, x: number, y: number, va
       }
     }
   }
-  history.commit(grid);
-  return count;
+  return out;
 }
 
 /** Replaces every `from` cell (and, with `similar`, every block like it) with `to`. Returns the number of cells changed. */

@@ -1,7 +1,8 @@
 import { useMemo } from 'react';
 import { clampBrush, type BrushShape } from '../core/brush';
 import { brushCells, createGrid } from '../core/grid';
-import { rectCells } from '../core/shapes';
+import { renderText, textCells } from '../core/pixelFont';
+import { ellipseCells, rectCells } from '../core/shapes';
 
 /** Merges row-major cell indices into one rectangle per horizontal run. */
 function runsPath(cells: readonly number[], width: number): string {
@@ -17,10 +18,10 @@ function runsPath(cells: readonly number[], width: number): string {
   return d;
 }
 
-/** A small picture of block cells in the text colour: one square per block, as large as fits (at most 8px). */
-function CellPreview({ cells, width, height }: { cells: readonly number[]; width: number; height: number }) {
+/** A small picture of block cells in the text colour: one square per block, as large as fits in `box` (at most 8px). */
+function CellPreview({ cells, width, height, box = [112, 112] }: { cells: readonly number[]; width: number; height: number; box?: [number, number] }) {
   const d = useMemo(() => runsPath(cells, width), [cells, width]);
-  const cell = Math.min(8, 112 / Math.max(width, height));
+  const cell = Math.min(8, box[0] / width, box[1] / height);
   return (
     <svg width={width * cell} height={height * cell} viewBox={`0 0 ${width} ${height}`} shapeRendering="crispEdges" aria-hidden>
       <path d={d} fill="currentColor" />
@@ -46,6 +47,22 @@ export function RectPreview({ filled, thickness, rounding }: { filled: boolean; 
   const cells = useMemo(
     () => rectCells(createGrid(RECT_W, RECT_H), { x: 1, y: 1 }, { x: RECT_W - 2, y: RECT_H - 2 }, filled, thickness, rounding),
     [filled, thickness, rounding],
+  );
+  return <CellPreview cells={cells} width={RECT_W} height={RECT_H} />;
+}
+
+/** The text at the chosen scale, or a sample while the field is empty. */
+export function TextPreview({ value, scale }: { value: string; scale: number }) {
+  const bitmap = useMemo(() => renderText(value.trim() ? value : 'Text', scale), [value, scale]);
+  const cells = useMemo(() => (bitmap ? textCells(bitmap, bitmap.width, bitmap.height, 0, 0) : []), [bitmap]);
+  return bitmap ? <CellPreview cells={cells} width={bitmap.width} height={bitmap.height} box={[256, 112]} /> : null;
+}
+
+/** An ellipse drawn with the current options, on the same small canvas. */
+export function EllipsePreview({ filled, thickness }: { filled: boolean; thickness: number }) {
+  const cells = useMemo(
+    () => ellipseCells(createGrid(RECT_W, RECT_H), { x: 1, y: 1 }, { x: RECT_W - 2, y: RECT_H - 2 }, filled, thickness),
+    [filled, thickness],
   );
   return <CellPreview cells={cells} width={RECT_W} height={RECT_H} />;
 }

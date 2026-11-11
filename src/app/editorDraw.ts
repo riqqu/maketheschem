@@ -1,7 +1,8 @@
-// Canvas overlays for the editor: outlines, selections, the measuring line and the rulers.
+// Canvas overlays for the editor: outlines, selections, the measuring line, mirror lines and the rulers.
 import type { BrushRow } from '../core/brush';
 import type { Grid } from '../core/grid';
 import { measureLabel, rowLineDistance, rulerSteps, type Cell, type Measurement } from '../core/measure';
+import type { Axes } from '../core/mirror';
 import type { Orientation } from '../core/types';
 
 export interface View {
@@ -117,6 +118,114 @@ export function label(ctx: CanvasRenderingContext2D, text: string, x: number, y:
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.fillText(text, lx + 7, ly + 11.5);
+}
+
+export type AxisName = 'x' | 'y';
+const HANDLE_R = 7;
+
+/**
+ * Where the grab handle of a mirror line sits on screen: above the art for the vertical line (x), left of it for the
+ * horizontal one (y), kept inside the canvas when the art is scrolled away. Null when the line itself is out of view.
+ */
+export function axisHandle(v: View, axis: AxisName, k: number, rulers: boolean): { x: number; y: number } | null {
+  const top = rulers ? RULER_H : 0;
+  const right = v.cw - (rulers ? RULER_W : 0);
+  const along = (axis === 'x' ? v.ox : v.oy) + (k / 2) * v.scale;
+  if (axis === 'x') {
+    return along < 0 || along > right ? null : { x: along, y: Math.max(v.oy - HANDLE_R - 4, top + HANDLE_R + 2) };
+  }
+  return along < top || along > v.ch ? null : { x: clamp(v.ox - HANDLE_R - 4, HANDLE_R + 2, right - HANDLE_R - 2), y: along };
+}
+
+/** The mirror line whose handle is under the pointer, if any. */
+export function axisAt(v: View, axes: Axes, mx: number, my: number, rulers: boolean): AxisName | null {
+  for (const axis of ['x', 'y'] as const) {
+    const k = axes[axis];
+    const h = k === null ? null : axisHandle(v, axis, k, rulers);
+    if (h && Math.hypot(mx - h.x, my - h.y) <= HANDLE_R + 4) return axis;
+  }
+  return null;
+}
+
+/** The mirror lines across the art, with a round handle each to drag them by. */
+export function drawAxes(ctx: CanvasRenderingContext2D, v: View, size: { width: number; height: number }, axes: Axes, accent: string, rulers: boolean) {
+  const { sx, sy } = screen(v);
+  ctx.save();
+  for (const axis of ['x', 'y'] as const) {
+    const k = axes[axis];
+    if (k === null) continue;
+    const along = Math.round((axis === 'x' ? v.ox : v.oy) + (k / 2) * v.scale) + 0.5;
+    const handle = axisHandle(v, axis, k, rulers);
+    ctx.beginPath();
+    if (axis === 'x') {
+      ctx.moveTo(along, handle ? Math.min(handle.y, sy(0)) : sy(0));
+      ctx.lineTo(along, sy(size.height));
+    } else {
+      ctx.moveTo(handle ? Math.min(handle.x, sx(0)) : sx(0), along);
+      ctx.lineTo(sx(size.width), along);
+    }
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+    ctx.stroke();
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeStyle = accent;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    if (!handle) continue;
+    ctx.beginPath();
+    ctx.arc(handle.x, handle.y, HANDLE_R, 0, Math.PI * 2);
+    ctx.fillStyle = accent;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+    // A small chevron each way along the direction the line moves in: d along it, p across it.
+    const [dx, dy] = axis === 'x' ? [1, 0] : [0, 1];
+    const [px, py] = [-dy, dx];
+    ctx.beginPath();
+    for (const s of [-1, 1]) {
+      ctx.moveTo(handle.x + s * 1.5 * dx - 3 * px, handle.y + s * 1.5 * dy - 3 * py);
+      ctx.lineTo(handle.x + s * 4.5 * dx, handle.y + s * 4.5 * dy);
+      ctx.lineTo(handle.x + s * 1.5 * dx + 3 * px, handle.y + s * 1.5 * dy + 3 * py);
+    }
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#fff';
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+/** The direction of a gradient while it is dragged out: a line with a dot of each end colour. */
+export function drawGradientGuide(ctx: CanvasRenderingContext2D, v: View, a: Cell, b: Cell, from: string, to: string) {
+  const ax = v.ox + (a.x + 0.5) * v.scale, ay = v.oy + (a.y + 0.5) * v.scale;
+  const bx = v.ox + (b.x + 0.5) * v.scale, by = v.oy + (b.y + 0.5) * v.scale;
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(bx, by);
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+  ctx.stroke();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#fff';
+  ctx.stroke();
+  for (const [x, y, colour] of [[ax, ay, from], [bx, by, to]] as const) {
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fillStyle = colour;
+    ctx.fill();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = 'rgba(0,0,0,0.65)';
+    ctx.stroke();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /** Measurement: span box, centre-to-centre line, end blocks and a label. */

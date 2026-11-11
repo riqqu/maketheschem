@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createGrid, History } from './grid';
 import {
-  clipRect, copyRegion, fillRect, intersectRect, lineCells, paintCells, rectBetween, rectCells, rectCorners, snapLine, snapSquare,
+  clipRect, copyRegion, ellipseCells, fillRect, intersectRect, lineCells, paintCells, rectBetween, rectCells, rectCorners, snapLine, snapSquare,
   stampClip, transformClip, transformRegion,
 } from './shapes';
+import { brushCells } from './grid';
 import { AIR } from './types';
 
 const coords = (width: number, cells: number[]) =>
@@ -155,6 +156,82 @@ describe('rounded rectangles', () => {
     expect(rectCells(big, a, b, false, 5)).toHaveLength(36);
     expect(rectCells(big, a, b, false, 3)).toHaveLength(36);
     expect(rectCells(big, a, b, false, 2)).toHaveLength(36 - 4);
+  });
+});
+
+describe('ellipses', () => {
+  const big = createGrid(40, 40);
+  const has = (cells: number[], x: number, y: number) => cells.includes(y * 40 + x);
+  const ellipse = (w: number, h: number, filled = true, thickness = 1) => ellipseCells(big, { x: 0, y: 0 }, { x: w - 1, y: h - 1 }, filled, thickness);
+
+  it('makes a circle of size n the same as the round brush of size n', () => {
+    for (let n = 1; n <= 30; n++) {
+      // Centred so the brush's first cell is at 0, like the brush preview does.
+      const mid = Math.floor((n - 1) / 2);
+      const stamp = brushCells(big, mid, mid, n, 'round').sort((a, b) => a - b);
+      expect(ellipse(n, n).sort((a, b) => a - b), `size ${n}`).toEqual(stamp);
+    }
+  });
+
+  it('draws small circles as pixel art expects', () => {
+    expect(ellipse(3, 3)).toHaveLength(5); // a plus
+    expect(ellipse(2, 2)).toHaveLength(4);
+    expect(ellipse(1, 1)).toHaveLength(1);
+    expect(ellipse(5, 5)).toHaveLength(21); // 5 x 5 with its corners trimmed
+  });
+
+  it('is symmetric on both axes', () => {
+    for (const [w, h] of [[10, 10], [9, 14], [21, 6], [7, 7], [16, 3]]) {
+      const cells = ellipse(w, h);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          expect(has(cells, x, y), `${w}x${h} (${x},${y})`).toBe(has(cells, w - 1 - x, y));
+          expect(has(cells, x, y), `${w}x${h} (${x},${y})`).toBe(has(cells, x, h - 1 - y));
+        }
+      }
+    }
+  });
+
+  it('touches all four sides of its box and stays inside it', () => {
+    const cells = ellipse(21, 9);
+    const xs = cells.map((i) => i % 40), ys = cells.map((i) => Math.floor(i / 40));
+    expect([Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)]).toEqual([0, 20, 0, 8]);
+  });
+
+  it('is longer than it is tall for a wide box', () => {
+    const cells = ellipse(21, 9);
+    expect(has(cells, 0, 4)).toBe(true); // the middle of the left side
+    expect(has(cells, 10, 0)).toBe(true); // the middle of the top
+    expect(has(cells, 0, 0)).toBe(false); // the corner
+  });
+
+  it('is an outline `thickness` wide, inside the filled ellipse', () => {
+    const filled = new Set(ellipse(16, 16));
+    const outline = ellipse(16, 16, false);
+    expect(outline.length).toBeLessThan(filled.size);
+    expect(outline.every((i) => filled.has(i))).toBe(true);
+    expect(has(outline, 8, 8)).toBe(false); // the middle is empty
+    expect(has(outline, 0, 8)).toBe(true);
+    const thick = ellipse(16, 16, false, 3);
+    expect(thick.length).toBeGreaterThan(outline.length);
+    expect(has(thick, 2, 8)).toBe(true);
+    expect(has(thick, 4, 8)).toBe(false);
+  });
+
+  it('fills everything when the outline is thicker than the ellipse', () => {
+    expect(ellipse(6, 6, false, 3)).toHaveLength(ellipse(6, 6).length);
+    expect(ellipse(8, 3, false, 2)).toHaveLength(ellipse(8, 3).length);
+  });
+
+  it('works from any pair of corners and clips at the grid edge', () => {
+    const g = createGrid(10, 10);
+    const forward = ellipseCells(g, { x: 1, y: 1 }, { x: 6, y: 4 }, true, 1).sort((a, b) => a - b);
+    expect(ellipseCells(g, { x: 6, y: 4 }, { x: 1, y: 1 }, true, 1).sort((a, b) => a - b)).toEqual(forward);
+    expect(ellipseCells(g, { x: 6, y: 1 }, { x: 1, y: 4 }, true, 1).sort((a, b) => a - b)).toEqual(forward);
+    const cut = ellipseCells(g, { x: -3, y: -3 }, { x: 4, y: 4 }, true, 1);
+    expect(cut.length).toBeGreaterThan(0);
+    expect(cut.every((i) => i >= 0 && i < 100)).toBe(true);
+    expect(ellipseCells(g, { x: 20, y: 20 }, { x: 30, y: 30 }, true, 1)).toEqual([]);
   });
 });
 

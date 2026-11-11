@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import {
-  Brush, ClipboardPaste, Copy, Eraser, FlipHorizontal2, FlipVertical2, Grid3x3, Layers, PaintBucket, Pipette, Redo2, Replace, RotateCw,
-  Ruler, RulerDimensionLine, Scan, Scissors, Slash, Square, SquareDashed, Trash2, Undo2, Image as ImageIcon, RefreshCw,
+  Brush, ClipboardPaste, Copy, Eraser, Ellipse, FlipHorizontal2, FlipVertical2, Grid3x3, Layers, PaintBucket, Pipette, Rainbow, Redo2, Replace,
+  RotateCw, Ruler, RulerDimensionLine, Scan, Scissors, Slash, Square, SquareDashed, Trash2, Type, Undo2, Image as ImageIcon, RefreshCw,
   type LucideIcon,
 } from 'lucide-react';
 import { IconButton } from '@/components/icon-button';
@@ -15,14 +15,19 @@ import type { SetOption, ToolOptions as ToolOptionsState } from './toolOptions';
 import { ToolOptionsBar } from './ToolOptionsBar';
 
 type ToolDef = { id: Tool; icon: LucideIcon; label: string; key: string; hint?: string };
-/** Grouped for the tool rail: painting, then picking/selecting/measuring. */
+/** Grouped for the tool rail: drawing, filling, then picking/selecting/measuring. */
 const TOOL_GROUPS: ToolDef[][] = [
   [
     { id: 'brush', icon: Brush, label: 'Brush', key: 'B' },
     { id: 'eraser', icon: Eraser, label: 'Eraser', key: 'E' },
     { id: 'line', icon: Slash, label: 'Line', key: 'L', hint: 'Shift snaps to 45°' },
     { id: 'rect', icon: Square, label: 'Rectangle', key: 'U', hint: 'Shift makes a square' },
+    { id: 'ellipse', icon: Ellipse, label: 'Ellipse', key: 'C', hint: 'Shift makes a circle' },
+    { id: 'text', icon: Type, label: 'Text', key: 'T', hint: 'Click to stamp it' },
+  ],
+  [
     { id: 'fill', icon: PaintBucket, label: 'Fill', key: 'G' },
+    { id: 'gradient', icon: Rainbow, label: 'Gradient', key: 'D', hint: 'Drag from the current block to the end block' },
     { id: 'replace', icon: Replace, label: 'Replace all', key: 'R' },
   ],
   [
@@ -125,7 +130,7 @@ export function Toolbar(p: Props) {
       <Group>
         <BlockPicker value={p.currentBlock} onSelect={p.onSelectBlock} orientation={p.orientation} recent={p.recent} disabled={noTools} />
       </Group>
-      <ToolOptionsBar tool={p.tool} options={p.toolOptions} set={p.setToolOption} disabled={noTools} />
+      <ToolOptionsBar tool={p.tool} options={p.toolOptions} set={p.setToolOption} disabled={noTools} orientation={p.orientation} recent={p.recent} />
 
       {p.tool === 'select' && !p.building && (
         <Group>
