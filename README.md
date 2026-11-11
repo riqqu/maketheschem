@@ -54,12 +54,13 @@ Other Minecraft versions: `npm run extract -- "<path to version jar>"` (add `--l
    The **measure tool** `M` works by dragging between two blocks. It shows the span (e.g. `13 × 6 blocks`, both end blocks
    counted), Δx/Δy and the straight-line distance. Shift keeps the line straight, and the measurement stays visible while
    you paint. `Esc` clears it.
-7. Check the **Materials** tab for a survival shopping list, then export:
+7. Check the **Materials** tab for a survival shopping list, then click **Export** (top right). The dialog shows the steps
+   for Minecraft after each export:
    - **.schem** for WorldEdit / FAWE, or **.litematic** for Litematica (in-game hologram and material list);
    - **Commands**: a data pack of vanilla `/fill` and `/setblock` commands that builds it instantly in a creative
      world, no mods (see below);
    - **Wall faces**: the side the picture is seen from (south, west, north or east), so no `//rotate` is needed;
-   - **Download preview .png**: an image of the art with textures, for sharing.
+   - **.png**: an image of the art with textures, for sharing.
 
 **History.** Every art (each image you load, blank canvas or opened `.schem`) is saved automatically in this
 browser and listed in the **History** tab, newest first, with a thumbnail. Click one to continue where you left off;
@@ -73,18 +74,18 @@ menu (`M`). Floors read with north at the top.
 
 **Commands (no mods).** Pick **Commands** as the format. Neighbouring blocks of the same kind are merged into
 `/fill` boxes (each at most 32,768 blocks, the game's default limit), and single blocks become `/setblock`.
-- **Run with: Command block** (no files needed): **Make command block commands** packs everything into as few single
+- **Run with: Command block** (no files needed): **Make commands** packs everything into as few single
   commands as fit a command block (32,500 characters each), listed as Part 1, Part 2, … with a **Copy** button each.
   Each part is one `/summon` of a falling redstone block and activator rail carrying command block minecarts, one
   per command (the "one command" technique from the Minecraft Wiki). The minecarts run their commands, then the
   rail and redstone block clear themselves, leaving the command block for the next part. Place the command block
   outside the build with 3 free blocks above it and a button on its side, then for each part: paste, **Done**,
   press the button. Paste one part at a time; a command block can't take several commands.
-- **Run with: Data pack**: **Download data pack** gives `<name>_datapack.zip`. Put it in the world's `datapacks` folder
+- **Run with: Data pack**: **Download** gives `<name>_datapack.zip`. Put it in the world's `datapacks` folder
   (Singleplayer → select the world → Edit → Open World Folder), run `/reload`, then `/function mts:<name>`. Builds
   with more than 20,000 commands run in parts, one per tick (a function stops after 65,536 commands). For relative
   placement a marker entity remembers where you ran it. The pack targets the data pack format read from your jar.
-  With `npm run dev` (or `npm run preview`) there's no file handling at all: pick the world under **Save into world**
+  With `npm run dev` (or `npm run preview`) there's no file handling at all: pick the world under **World**
   (your worlds, last played first) and **Save to world** writes `<name>_datapack.zip` into its `datapacks` folder. The
   dev server does the writing, because browsers refuse folders inside AppData. It reads the launcher's default
   saves folder (`%APPDATA%\.minecraft\saves`, `~/Library/Application Support/minecraft/saves` or
@@ -116,7 +117,7 @@ Switch to **3D model** at the top, or just drop a `.glb`, `.gltf` or `.stl` file
 3. **Matching** works as for images: smooth textures, **Pattern** dithering (laid on each surface) and **Limit block
    types**. The **Blocks** tab chooses which blocks may be used.
 4. The preview can be turned (drag), panned (right-drag) and zoomed (wheel). Hover a block to see its position and
-   name. **Original model** shows the model itself at the same place for comparison.
+   name. **Original** shows the model itself at the same place for comparison.
 5. **Export** writes a 3D `.schem`, `.litematic` or **Commands** data pack, and a `.png` of the current view. Paste
    it with the bottom north-west corner at your position (`//paste -a`), or run the data pack's function.
 
@@ -146,3 +147,5 @@ npm test           # core logic: matching, dithering, grid editing and shapes, N
 npm run typecheck
 npm run build
 ```
+
+The UI is React with [shadcn/ui](https://ui.shadcn.com) components on Tailwind CSS v4. See `CLAUDE.md` for where things go.
