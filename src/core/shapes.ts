@@ -1,5 +1,6 @@
 // Shape, selection and transform maths for the editor tools (pure, unit-tested).
-import { brushCells, type Grid, type History } from './grid';
+import { brushRows, clampBrush, type BrushShape } from './brush';
+import type { Grid, History } from './grid';
 import type { Cell } from './measure';
 import { AIR } from './types';
 
@@ -50,34 +51,78 @@ export function snapSquare(a: Cell, b: Cell): Cell {
   return { x: a.x + (b.x < a.x ? -d : d), y: a.y + (b.y < a.y ? -d : d) };
 }
 
-/** Cells of a straight line (Bresenham) drawn with a square brush of `size`, inside the grid. */
-export function lineCells(grid: Grid, a: Cell, b: Cell, size: number): number[] {
-  const out = new Set<number>();
+/** Cells of a straight line (Bresenham) drawn with a brush of `size`, inside the grid. */
+export function lineCells(grid: Grid, a: Cell, b: Cell, size: number, shape: BrushShape = 'square'): number[] {
+  // Mark cells in a mask over the part of the grid the line can touch: cheap even for a thick, long line.
+  const rows = brushRows(size, shape);
+  const reach = Math.ceil(clampBrush(size) / 2) + 1;
+  const x0 = Math.max(0, Math.min(a.x, b.x) - reach), x1 = Math.min(grid.width - 1, Math.max(a.x, b.x) + reach);
+  const y0 = Math.max(0, Math.min(a.y, b.y) - reach), y1 = Math.min(grid.height - 1, Math.max(a.y, b.y) + reach);
+  if (x1 < x0 || y1 < y0) return [];
+  const w = x1 - x0 + 1;
+  const mask = new Uint8Array(w * (y1 - y0 + 1));
   const dx = Math.abs(b.x - a.x), dy = -Math.abs(b.y - a.y);
   const sx = a.x < b.x ? 1 : -1, sy = a.y < b.y ? 1 : -1;
   let e = dx + dy;
   let x = a.x, y = a.y;
   for (;;) {
-    for (const i of brushCells(grid, x, y, size)) out.add(i);
+    for (const row of rows) {
+      const cy = y + row.dy;
+      if (cy < y0 || cy > y1) continue;
+      const from = Math.max(x + row.dx0, x0), to = Math.min(x + row.dx1, x1);
+      mask.fill(1, (cy - y0) * w + from - x0, (cy - y0) * w + to - x0 + 1);
+    }
     if (x === b.x && y === b.y) break;
     const e2 = 2 * e;
     if (e2 >= dy) { e += dy; x += sx; }
     if (e2 <= dx) { e += dx; y += sy; }
   }
-  return [...out];
+  const out: number[] = [];
+  for (let i = 0; i < mask.length; i++) if (mask[i]) out.push((y0 + Math.floor(i / w)) * grid.width + x0 + (i % w));
+  return out;
 }
 
-/** Cells of a rectangle between two corners: filled, or an outline `thickness` blocks wide (inwards). */
-export function rectCells(grid: Grid, a: Cell, b: Cell, filled: boolean, thickness: number): number[] {
+/** The two corner cells of a rectangle dragged from `a` to `b`; from the centre, `a` is the middle block. */
+export function rectCorners(a: Cell, b: Cell, fromCenter: boolean): [Cell, Cell] {
+  return fromCenter ? [{ x: 2 * a.x - b.x, y: 2 * a.y - b.y }, b] : [a, b];
+}
+
+/**
+ * Circle radius, in blocks, for corner rounding step `step` (0 = square). Chosen so that every step from 1 up looks
+ * different on a pixel grid: step 1 trims only the corner block, step 2 a 2-1 staircase, step 3 a 3-1-1 curve.
+ */
+export const roundingRadius = (step: number) => (step > 0 ? (step * 4) / 3 + 0.75 : 0);
+
+/** Is cell (x, y) inside `r` once its corners are rounded off with a circle of `radius` blocks? */
+function inRounded(x: number, y: number, r: Rect, radius: number): boolean {
+  if (x < r.x || y < r.y || x >= r.x + r.w || y >= r.y + r.h) return false;
+  const rad = Math.min(radius, r.w / 2, r.h / 2);
+  if (rad <= 0) return true;
+  // Distance of the cell's centre from the corner circle's centre, once it is inside a corner square.
+  const cx = x + 0.5, cy = y + 0.5;
+  const left = r.x + rad, right = r.x + r.w - rad, top = r.y + rad, bottom = r.y + r.h - rad;
+  const dx = cx < left ? left - cx : cx > right ? cx - right : 0;
+  const dy = cy < top ? top - cy : cy > bottom ? cy - bottom : 0;
+  return dx * dx + dy * dy <= rad * rad;
+}
+
+/**
+ * Cells of a rectangle between two corners, inside the grid: filled, or an outline `thickness` blocks wide
+ * (inwards). `rounding` (see roundingRadius) rounds the corners; the outline keeps its thickness around the curve.
+ * Corners never round further than a half-circle, so a big step turns a square into a disc.
+ */
+export function rectCells(grid: Grid, a: Cell, b: Cell, filled: boolean, thickness: number, rounding = 0): number[] {
   const r = rectBetween(a, b);
-  const t = Math.max(1, thickness);
+  const t = Math.max(1, Math.round(thickness));
+  const rad = roundingRadius(rounding);
+  const inner: Rect = { x: r.x + t, y: r.y + t, w: r.w - 2 * t, h: r.h - 2 * t };
+  const hasInner = !filled && inner.w > 0 && inner.h > 0;
   const out: number[] = [];
-  for (let y = r.y; y < r.y + r.h; y++) {
-    if (y < 0 || y >= grid.height) continue;
-    for (let x = r.x; x < r.x + r.w; x++) {
-      if (x < 0 || x >= grid.width) continue;
-      const edge = x - r.x < t || r.x + r.w - 1 - x < t || y - r.y < t || r.y + r.h - 1 - y < t;
-      if (filled || edge) out.push(y * grid.width + x);
+  for (let y = Math.max(r.y, 0); y < Math.min(r.y + r.h, grid.height); y++) {
+    for (let x = Math.max(r.x, 0); x < Math.min(r.x + r.w, grid.width); x++) {
+      if (!inRounded(x, y, r, rad)) continue;
+      if (hasInner && inRounded(x, y, inner, Math.max(0, rad - t))) continue;
+      out.push(y * grid.width + x);
     }
   }
   return out;

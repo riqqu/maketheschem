@@ -55,13 +55,14 @@ export const DEFAULT_SETTINGS: ArtSettings = {
   enabled: defaultEnabledIds(),
 };
 
-const pick = <T>(v: unknown, allowed: readonly T[], fallback: T): T => (allowed.includes(v as T) ? (v as T) : fallback);
-const num = (v: unknown, lo: number, hi: number, fallback: number, int = true) => {
+// Small validators for values read back from storage.
+export const pick = <T>(v: unknown, allowed: readonly T[], fallback: T): T => (allowed.includes(v as T) ? (v as T) : fallback);
+export const num = (v: unknown, lo: number, hi: number, fallback: number, int = true) => {
   if (typeof v !== 'number' || !Number.isFinite(v)) return fallback;
   const c = Math.min(hi, Math.max(lo, v));
   return int ? Math.round(c) : c;
 };
-const bool = (v: unknown, fallback: boolean) => (typeof v === 'boolean' ? v : fallback);
+export const bool = (v: unknown, fallback: boolean) => (typeof v === 'boolean' ? v : fallback);
 
 /** Validates settings loaded from storage, filling gaps from `fallback`. Unknown block ids are dropped. */
 export function sanitizeSettings(raw: unknown, fallback: ArtSettings = DEFAULT_SETTINGS): ArtSettings {

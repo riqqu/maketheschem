@@ -1,13 +1,16 @@
 import { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
-import { brushCells, floodFill, paintLine, replaceAll, type Grid, type History } from '../core/grid';
+import { brushRows, type BrushShape } from '../core/brush';
+import { floodFill, paintLine, replaceAll, type Grid, type History } from '../core/grid';
 import { lockAxis, rowLineDistance, type Cell, type Measurement } from '../core/measure';
 import {
-  clipRect, copyRegion, fillRect, inRect, lineCells, paintCells, rectBetween, rectCells, snapLine, snapSquare, stampClip,
-  transformClip, transformRegion, type Clip, type ClipTransform, type Rect,
+  clipRect, copyRegion, fillRect, inRect, lineCells, paintCells, rectBetween, rectCells, rectCorners, snapLine, snapSquare,
+  stampClip, transformClip, transformRegion, type Clip, type ClipTransform, type Rect,
 } from '../core/shapes';
+import { similarBlocks } from '../core/similar';
 import { AIR, faceOf, type BlockInfo, type Orientation } from '../core/types';
 import { colorCanvas } from '../lib/render';
-import { dashedRect, drawMeasurement, drawRulers, label, outlineCells, RULER_H, RULER_W, screen, type Theme, type View } from './editorDraw';
+import { dashedRect, drawMeasurement, drawRulers, label, outlineBrush, RULER_H, RULER_W, screen, type Theme, type View } from './editorDraw';
+import type { ToolOptions } from './toolOptions';
 
 export type Tool = 'brush' | 'eraser' | 'picker' | 'fill' | 'replace' | 'measure' | 'line' | 'rect' | 'select';
 export type ViewMode = 'textures' | 'colors';
@@ -46,8 +49,7 @@ interface Props {
   showGrid: boolean;
   showRulers: boolean;
   tool: Tool;
-  brushSize: number;
-  rectFilled: boolean;
+  options: ToolOptions;
   currentBlock: number;
   history: History;
   fitSignal: number;
@@ -81,7 +83,7 @@ interface Floating {
 
 type Drag =
   | { kind: 'pan'; sx: number; sy: number; ox: number; oy: number }
-  | { kind: 'paint'; lx: number; ly: number; value: number }
+  | { kind: 'paint'; lx: number; ly: number; value: number; size: number; shape: BrushShape }
   | { kind: 'measure' }
   | { kind: 'shape'; a: Cell; b: Cell }
   | { kind: 'select'; a: Cell }
@@ -91,6 +93,9 @@ type Drag =
 let clipboard: Clip | null = null;
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+/** Size and shape of the tools that paint with a brush stamp (brush, eraser, line); null for the others. */
+const penOf = (p: Pick<Props, 'tool' | 'options'>) =>
+  p.tool === 'brush' ? p.options.brush : p.tool === 'eraser' ? p.options.eraser : p.tool === 'line' ? p.options.line : null;
 const isTyping = (e: KeyboardEvent) =>
   !!(e.target as HTMLElement)?.closest?.('input:not([type=checkbox]):not([type=range]):not([type=radio]), textarea, select, [contenteditable]');
 
@@ -265,19 +270,12 @@ export function Editor(props: Props) {
     const h = hover.current;
     const footprint = p.tool !== 'select' && p.tool !== 'measure';
     if (h && footprint && !space.current && d?.kind !== 'pan' && d?.kind !== 'shape') {
-      const size = p.tool === 'brush' || p.tool === 'eraser' || p.tool === 'line' ? p.brushSize : 1;
-      const cells = brushCells(g, h.x, h.y, size);
-      if (cells.length) {
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const i of cells) {
-          const cx = i % g.width, cy = (i - cx) / g.width;
-          minX = Math.min(minX, cx); maxX = Math.max(maxX, cx); minY = Math.min(minY, cy); maxY = Math.max(maxY, cy);
-        }
-        outlineCells(ctx, sx(minX), sy(minY), sx(maxX + 1) - sx(minX), sy(maxY + 1) - sy(minY));
-      }
+      const pen = penOf(p);
+      outlineBrush(ctx, v, h.x, h.y, brushRows(pen?.size ?? 1, pen?.shape));
     }
     if (d?.kind === 'shape') {
-      const r = rectBetween(d.a, d.b);
+      const [c0, c1] = p.tool === 'rect' ? rectCorners(d.a, d.b, p.options.rect.fromCenter) : [d.a, d.b];
+      const r = rectBetween(c0, c1);
       label(ctx, `${r.w} × ${r.h}`, sx(d.b.x + 1) + 8, sy(d.b.y) - 28, { top: p.showRulers ? RULER_H : 0, right: cw - (p.showRulers ? RULER_W : 0), bottom: ch });
     }
 
@@ -293,8 +291,17 @@ export function Editor(props: Props) {
   };
 
   const shapeCells = (g: Grid, a: Cell, b: Cell) => {
-    const p = propsRef.current;
-    return p.tool === 'line' ? lineCells(g, a, b, p.brushSize) : rectCells(g, a, b, p.rectFilled, p.brushSize);
+    const { tool, options } = propsRef.current;
+    if (tool === 'line') return lineCells(g, a, b, options.line.size, options.line.shape);
+    const { filled, thickness, rounding, fromCenter } = options.rect;
+    const [c0, c1] = rectCorners(a, b, fromCenter);
+    return rectCells(g, c0, c1, filled, thickness, rounding);
+  };
+
+  /** Which cells a click of fill / replace treats as the clicked block: the same block, or ones close in colour. */
+  const similarFor = (tolerance: number) => {
+    const { blocks, orientation } = propsRef.current;
+    return similarBlocks(blocks.map((b) => faceOf(b, orientation).rgb), tolerance);
   };
 
   const drawRef = useRef(draw);
@@ -350,7 +357,7 @@ export function Editor(props: Props) {
     if (!f || !g) return false;
     history.begin();
     if (f.source) fillRect(g, history, f.source, AIR);
-    stampClip(g, history, f.clip, f.x, f.y, true);
+    stampClip(g, history, f.clip, f.x, f.y, propsRef.current.options.select.airTransparent);
     const changed = history.commit(g);
     floating.current = null;
     selection.current = clipRect({ x: f.x, y: f.y, w: f.clip.width, h: f.clip.height }, g.width, g.height);
@@ -580,7 +587,7 @@ export function Editor(props: Props) {
 
   useEffect(() => {
     requestDraw();
-  }, [props.viewMode, props.showGrid, props.showRulers, props.atlas, props.tool, props.brushSize, props.overlay, props.overlayOpacity]);
+  }, [props.viewMode, props.showGrid, props.showRulers, props.atlas, props.tool, props.options, props.overlay, props.overlayOpacity]);
 
   // Leaving the select tool places a floating selection.
   useEffect(() => {
@@ -749,18 +756,20 @@ export function Editor(props: Props) {
       setMeasure({ a: c, b: c });
     } else if (p.tool === 'brush' || p.tool === 'eraser') {
       const value = p.tool === 'eraser' ? AIR : p.currentBlock;
+      const pen = penOf(p)!;
       p.history.begin();
-      paintLine(g, p.history, c.x, c.y, c.x, c.y, p.brushSize, value);
-      drag.current = { kind: 'paint', lx: c.x, ly: c.y, value };
+      paintLine(g, p.history, c.x, c.y, c.x, c.y, pen.size, value, pen.shape);
+      drag.current = { kind: 'paint', lx: c.x, ly: c.y, value, size: pen.size, shape: pen.shape };
       colorDirty.current = true;
       requestDraw();
     } else if (p.tool === 'line' || p.tool === 'rect') {
       drag.current = { kind: 'shape', a: c, b: c };
       requestDraw();
     } else if (p.tool === 'fill') {
-      if (floodFill(g, p.history, c.x, c.y, p.currentBlock) > 0) edited();
+      const { diagonal, tolerance } = p.options.fill;
+      if (floodFill(g, p.history, c.x, c.y, p.currentBlock, { diagonal, similar: similarFor(tolerance) }) > 0) edited();
     } else if (p.tool === 'replace') {
-      if (replaceAll(g, p.history, g.cells[i], p.currentBlock) > 0) edited();
+      if (replaceAll(g, p.history, g.cells[i], p.currentBlock, similarFor(p.options.replace.tolerance)) > 0) edited();
     }
   };
 
@@ -791,10 +800,10 @@ export function Editor(props: Props) {
       if (e.shiftKey) b = lockAxis(a, b);
       if (b.x !== measure.current.b.x || b.y !== measure.current.b.y) setMeasure({ a, b });
     } else if (d?.kind === 'paint') {
-      const x = clamp(c.x, -p.brushSize, g.width + p.brushSize);
-      const y = clamp(c.y, -p.brushSize, g.height + p.brushSize);
+      const x = clamp(c.x, -d.size, g.width + d.size);
+      const y = clamp(c.y, -d.size, g.height + d.size);
       if (x !== d.lx || y !== d.ly) {
-        paintLine(g, p.history, d.lx, d.ly, x, y, p.brushSize, d.value);
+        paintLine(g, p.history, d.lx, d.ly, x, y, d.size, d.value, d.shape);
         d.lx = x;
         d.ly = y;
         colorDirty.current = true;

@@ -30,9 +30,11 @@ import {
   buildPalette, generationKeys, LAST_SETTINGS_KEY, loadLastSettings, sanitizeSettings, type ArtSettings, type GenerationKeys,
 } from './settings';
 import { clampSize, MAX_SIDE, MAX_WALL_HEIGHT, maxHeightFor, sizeFromHeight, sizeFromLongest, sizeFromWidth } from './size';
+import { stepToolSize } from './toolOptions';
 import { ToolRail, Toolbar } from './Toolbar';
 import { useArtHistory } from './useArtHistory';
 import { useGenerator } from './useGenerator';
+import { useToolOptions } from './useToolOptions';
 
 // three.js is large: load the 3D model mode only when it's first used.
 const ModelWorkspace = lazy(() => import('./ModelWorkspace').then((m) => ({ default: m.ModelWorkspace })));
@@ -109,8 +111,9 @@ export default function App() {
   const eraseIsTop = () => eraseIdRef.current !== null && history.topId === eraseIdRef.current;
 
   const [tool, setTool] = useState<Tool>('brush');
-  const [brushSize, setBrushSize] = useState(1);
-  const [rectFilled, setRectFilled] = useState(false);
+  const [toolOptions, setToolOption] = useToolOptions();
+  const toolOptionsRef = useRef(toolOptions);
+  toolOptionsRef.current = toolOptions;
   const [currentBlock, setCurrentBlock] = useState(() => blockIndexById.get('white_concrete') ?? 0);
   const [recent, setRecent] = useState<number[]>([]);
   const [viewMode, setViewMode] = useState<ViewMode>('textures');
@@ -482,7 +485,8 @@ export default function App() {
     if (v === AIR) return;
     setCurrentBlock(v);
     setRecent((r) => [v, ...r.filter((x) => x !== v)].slice(0, 12));
-    setTool((t) => (t === 'picker' || t === 'eraser' ? 'brush' : t));
+    // Picking with the eraser means "paint with this"; the pick tool only leaves when its option says so.
+    setTool((t) => (t === 'eraser' || (t === 'picker' && toolOptionsRef.current.picker.backToBrush) ? 'brush' : t));
   }, []);
 
   const selectBlock = (v: number) => {
@@ -521,8 +525,7 @@ export default function App() {
       redo();
     } else if (!e.ctrlKey && !e.metaKey && !e.altKey) {
       if (TOOL_KEYS[k] && grid) setTool(TOOL_KEYS[k]);
-      else if (k === '[') setBrushSize((s) => Math.max(1, s - 1));
-      else if (k === ']') setBrushSize((s) => Math.min(5, s + 1));
+      else if (k === '[' || k === ']') stepToolSize(tool, toolOptions, setToolOption, k === ']' ? 1 : -1);
       else if (k === 'f') setFitSignal((n) => n + 1);
       else if (k === 'o' && image) setOverlayOn((v) => !v);
     }
@@ -598,10 +601,8 @@ export default function App() {
         <>
           <Toolbar
             tool={tool}
-            brushSize={brushSize}
-            setBrushSize={setBrushSize}
-            rectFilled={rectFilled}
-            setRectFilled={setRectFilled}
+            toolOptions={toolOptions}
+            setToolOption={setToolOption}
             currentBlock={currentBlock}
             recent={recent}
             onSelectBlock={selectBlock}
@@ -652,8 +653,7 @@ export default function App() {
                 showGrid={showGrid}
                 showRulers={showRulers}
                 tool={tool}
-                brushSize={brushSize}
-                rectFilled={rectFilled}
+                options={toolOptions}
                 currentBlock={currentBlock}
                 history={history}
                 fitSignal={fitSignal}

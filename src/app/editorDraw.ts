@@ -1,4 +1,5 @@
 // Canvas overlays for the editor: outlines, selections, the measuring line and the rulers.
+import type { BrushRow } from '../core/brush';
 import type { Grid } from '../core/grid';
 import { measureLabel, rowLineDistance, rulerSteps, type Cell, type Measurement } from '../core/measure';
 import type { Orientation } from '../core/types';
@@ -41,6 +42,34 @@ export function outlineCells(ctx: CanvasRenderingContext2D, x: number, y: number
   ctx.lineWidth = 1;
   ctx.strokeStyle = '#fff';
   ctx.strokeRect(x - 0.5, y - 0.5, w + 1, h + 1);
+}
+
+/** Black + white outline around a brush stamp centred on cell (cx, cy): follows round brushes, not just their box. */
+export function outlineBrush(ctx: CanvasRenderingContext2D, v: View, cx: number, cy: number, rows: readonly BrushRow[]) {
+  if (!rows.length) return;
+  const { sx, sy } = screen(v);
+  const px = (x: number) => sx(x) + 0.5;
+  const py = (y: number) => sy(y) + 0.5;
+  // Rows are one run each and follow each other, so the outline is a staircase down the right side and up the left.
+  ctx.beginPath();
+  ctx.moveTo(px(cx + rows[0].dx0), py(cy + rows[0].dy));
+  for (const r of rows) {
+    ctx.lineTo(px(cx + r.dx1 + 1), py(cy + r.dy));
+    ctx.lineTo(px(cx + r.dx1 + 1), py(cy + r.dy + 1));
+  }
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i];
+    ctx.lineTo(px(cx + r.dx0), py(cy + r.dy + 1));
+    ctx.lineTo(px(cx + r.dx0), py(cy + r.dy));
+  }
+  ctx.closePath();
+  ctx.lineJoin = 'miter';
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+  ctx.stroke();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#fff';
+  ctx.stroke();
 }
 
 /** Selection outline: white dashes on a dark line. */

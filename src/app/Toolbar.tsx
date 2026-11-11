@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import {
   Brush, ClipboardPaste, Copy, Eraser, FlipHorizontal2, FlipVertical2, Grid3x3, Layers, PaintBucket, Pipette, Redo2, Replace, RotateCw,
-  Ruler, RulerDimensionLine, Scan, Scissors, Slash, Square, SquareDashed, SquareSquare, Trash2, Undo2, Image as ImageIcon, RefreshCw,
+  Ruler, RulerDimensionLine, Scan, Scissors, Slash, Square, SquareDashed, Trash2, Undo2, Image as ImageIcon, RefreshCw,
   type LucideIcon,
 } from 'lucide-react';
 import { IconButton } from '@/components/icon-button';
@@ -11,6 +11,8 @@ import type { ClipTransform } from '../core/shapes';
 import type { Orientation } from '../core/types';
 import { BlockPicker } from './BlockPicker';
 import type { SelectionInfo, Tool, ViewMode } from './Editor';
+import type { SetOption, ToolOptions as ToolOptionsState } from './toolOptions';
+import { ToolOptionsBar } from './ToolOptionsBar';
 
 type ToolDef = { id: Tool; icon: LucideIcon; label: string; key: string; hint?: string };
 /** Grouped for the tool rail: painting, then picking/selecting/measuring. */
@@ -80,15 +82,10 @@ export function ToolRail({ tool, setTool, selection: sel, onTransform, disabled 
   );
 }
 
-/** Tools that use the size slider. */
-export const SIZED_TOOLS: Tool[] = ['brush', 'eraser', 'line', 'rect'];
-
 interface Props {
   tool: Tool;
-  brushSize: number;
-  setBrushSize: (n: number) => void;
-  rectFilled: boolean;
-  setRectFilled: (v: boolean) => void;
+  toolOptions: ToolOptionsState;
+  setToolOption: SetOption;
   currentBlock: number;
   recent: number[];
   onSelectBlock: (value: number) => void;
@@ -125,21 +122,7 @@ export function Toolbar(p: Props) {
       <Group>
         <BlockPicker value={p.currentBlock} onSelect={p.onSelectBlock} orientation={p.orientation} recent={p.recent} disabled={p.disabled} />
       </Group>
-      <Group>
-        <Slider
-          className="w-20"
-          min={1}
-          max={5}
-          value={[p.brushSize]}
-          onValueChange={([v]) => p.setBrushSize(v)}
-          disabled={p.disabled || !SIZED_TOOLS.includes(p.tool)}
-          aria-label="Brush size"
-        />
-        <span className="w-4 text-center tabular-nums text-muted-foreground">{p.brushSize}</span>
-        {p.tool === 'rect' && (
-          <IconButton icon={SquareSquare} label="Filled rectangle" pressed={p.rectFilled} onClick={() => p.setRectFilled(!p.rectFilled)} />
-        )}
-      </Group>
+      <ToolOptionsBar tool={p.tool} options={p.toolOptions} set={p.setToolOption} disabled={p.disabled} />
 
       {p.tool === 'select' && (
         <Group>

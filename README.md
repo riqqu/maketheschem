@@ -38,12 +38,16 @@ Other Minecraft versions: `npm run extract -- "<path to version jar>"` (add `--l
 
    | Tool | Key | Notes |
    |---|---|---|
-   | Brush / Eraser | `B` / `E` | `[` `]` change the size |
-   | Line / Rectangle | `L` / `U` | Shift snaps to 45° / a square; the rectangle can be an outline or filled |
-   | Fill / Replace all | `G` / `R` | |
-   | Pick block | `I` | or right-click / Alt+click with any tool |
-   | Select | `S` | drag to select, drag inside to move; `Ctrl+C` `Ctrl+X` `Ctrl+V` `Delete`, `Ctrl+A`; `Enter` places a moved or pasted part, `Esc` cancels. Air in a pasted part is see-through. |
+   | Brush / Eraser | `B` / `E` | size 1–100, square or round; `[` `]` step the size |
+   | Line / Rectangle | `L` / `U` | Shift snaps to 45° / a square. Line: width and square or round tip. Rectangle: outline or filled, outline thickness, corner radius, and drawing out from the middle block |
+   | Fill / Replace all | `G` / `R` | **Tolerance** also takes blocks of a similar colour, not only the clicked block; Fill can also **include diagonals** |
+   | Pick block | `I` | or right-click / Alt+click with any tool; by default it switches back to the brush |
+   | Select | `S` | drag to select, drag inside to move; `Ctrl+C` `Ctrl+X` `Ctrl+V` `Delete`, `Ctrl+A`; `Enter` places a moved or pasted part, `Esc` cancels. Air in a moved or pasted part is see-through unless you turn that off. |
    | Measure | `M` | see below |
+
+   Each tool has its own options in the bar above the canvas, like the options bar in Photoshop. Size-like options open
+   a slider with a number box, preset sizes and a preview of what the brush or rectangle draws. The options are
+   remembered between sessions.
 
    Flip and 180° turns work on the selection, or on the whole art when nothing is selected. A 90° turn needs a
    selection (turn whole builds with `//rotate` in game). `O` lays the source image over the blocks for comparison.

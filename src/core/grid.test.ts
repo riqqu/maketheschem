@@ -24,6 +24,18 @@ describe('paintLine', () => {
     expect(brushCells(g, 0, 0, 3).sort()).toEqual([0, 1, 3, 4]);
     expect(brushCells(g, 1, 1, 2).sort()).toEqual([4, 5, 7, 8]);
   });
+
+  it('paints round brushes', () => {
+    const g = createGrid(3, 3, 0);
+    expect(brushCells(g, 1, 1, 3, 'round')).toEqual([1, 3, 4, 5, 7]); // a plus
+    expect(brushCells(g, 0, 0, 3, 'round')).toEqual([0, 1, 3]); // clipped at the corner
+    expect(brushCells(g, -5, 1, 3, 'round')).toEqual([]);
+    const h = new History();
+    h.begin();
+    paintLine(g, h, 1, 1, 1, 1, 3, 5, 'round');
+    h.commit(g);
+    expect(rows(g)).toEqual([[0, 5, 0], [5, 5, 5], [0, 5, 0]]);
+  });
 });
 
 describe('floodFill', () => {
@@ -46,6 +58,45 @@ describe('floodFill', () => {
     expect(floodFill(g, h, 0, 0, 3)).toBe(0);
     expect(h.canUndo).toBe(false);
   });
+
+  it('can spread across corners', () => {
+    const g = createGrid(3, 3, 0);
+    g.cells.set([0, 1, 1, 1, 0, 1, 1, 1, 0]);
+    const h = new History();
+    expect(floodFill(g, h, 0, 0, 7)).toBe(1);
+    expect(rows(g)).toEqual([[7, 1, 1], [1, 0, 1], [1, 1, 0]]);
+    expect(floodFill(g, h, 1, 1, 8, { diagonal: true })).toBe(2);
+    expect(rows(g)).toEqual([[7, 1, 1], [1, 8, 1], [1, 1, 8]]);
+  });
+
+  // Blocks 1 and 2 are "similar", 3 is not.
+  const similar = (a: number, b: number) => a !== 3 && b !== 3 && a !== AIR && b !== AIR;
+
+  it('spreads over similar blocks and stops at others', () => {
+    const g = createGrid(4, 1, 0);
+    g.cells.set([1, 2, 3, 1]);
+    const h = new History();
+    expect(floodFill(g, h, 0, 0, 5, { similar })).toBe(2);
+    expect([...g.cells]).toEqual([5, 5, 3, 1]);
+    h.undo(g);
+    expect([...g.cells]).toEqual([1, 2, 3, 1]);
+  });
+
+  it('terminates when the fill block is itself similar to the clicked one', () => {
+    const g = createGrid(3, 1, 0);
+    g.cells.set([1, 2, 1]);
+    const h = new History();
+    expect(floodFill(g, h, 0, 0, 2, { similar })).toBe(2);
+    expect([...g.cells]).toEqual([2, 2, 2]);
+    expect(floodFill(g, h, 0, 0, 2, { similar })).toBe(0);
+  });
+
+  it('keeps air apart from blocks', () => {
+    const g = createGrid(3, 1, AIR);
+    g.cells.set([AIR, 1, AIR]);
+    expect(floodFill(g, new History(), 0, 0, 4, { similar })).toBe(1);
+    expect([...g.cells]).toEqual([4, 1, AIR]);
+  });
 });
 
 describe('replaceAll and countBlocks', () => {
@@ -58,6 +109,14 @@ describe('replaceAll and countBlocks', () => {
     expect(countBlocks(g)).toEqual(new Map([[9, 2], [2, 1]]));
     h.undo(g);
     expect([...g.cells]).toEqual([1, 2, 1, AIR]);
+  });
+
+  it('also replaces similar blocks', () => {
+    const g = createGrid(4, 1, AIR);
+    g.cells.set([1, 2, 3, AIR]);
+    const similar = (a: number, b: number) => a !== AIR && b !== AIR && a !== 3 && b !== 3;
+    expect(replaceAll(g, new History(), 1, 9, similar)).toBe(2);
+    expect([...g.cells]).toEqual([9, 9, 3, AIR]);
   });
 });
 
