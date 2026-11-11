@@ -358,5 +358,5 @@ export function ModelPreview({ faces, volume, source, view, atlas, tileSize, atl
       }),
   }));
 
-  return <div ref={host} className="preview3d" />;
+  return <div ref={host} className="absolute inset-0 touch-none overflow-hidden [&_canvas]:block" />;
 }

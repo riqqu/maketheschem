@@ -1,29 +1,39 @@
-import { useState } from 'react';
-import { BLOCKS } from '../data';
+import type { ReactNode } from 'react';
+import {
+  Brush, ClipboardPaste, Copy, Eraser, FlipHorizontal2, FlipVertical2, Grid3x3, Layers, PaintBucket, Pipette, Redo2, Replace, RotateCw,
+  Ruler, RulerDimensionLine, Scan, Scissors, Slash, Square, SquareDashed, SquareSquare, Trash2, Undo2, Image as ImageIcon, RefreshCw,
+  type LucideIcon,
+} from 'lucide-react';
+import { IconButton } from '@/components/icon-button';
+import { Separator } from '@/components/ui/separator';
+import { Slider } from '@/components/ui/slider';
 import type { ClipTransform } from '../core/shapes';
 import type { Orientation } from '../core/types';
 import { BlockPicker } from './BlockPicker';
-import { BlockSwatch } from './BlockSwatch';
 import type { SelectionInfo, Tool, ViewMode } from './Editor';
-import { Icon } from './Icon';
 
-type ToolDef = { id: Tool; icon: string; label: string; key: string };
+type ToolDef = { id: Tool; icon: LucideIcon; label: string; key: string; hint?: string };
 /** Grouped for the tool rail: painting, then picking/selecting/measuring. */
 const TOOL_GROUPS: ToolDef[][] = [
   [
-    { id: 'brush', icon: 'brush', label: 'Brush', key: 'B' },
-    { id: 'eraser', icon: 'eraser', label: 'Eraser (sets air)', key: 'E' },
-    { id: 'line', icon: 'line', label: 'Line (Shift = straight or 45°)', key: 'L' },
-    { id: 'rect', icon: 'rect', label: 'Rectangle (Shift = square)', key: 'U' },
-    { id: 'fill', icon: 'fill', label: 'Flood fill', key: 'G' },
-    { id: 'replace', icon: 'replace', label: 'Replace all of the clicked block', key: 'R' },
+    { id: 'brush', icon: Brush, label: 'Brush', key: 'B' },
+    { id: 'eraser', icon: Eraser, label: 'Eraser', key: 'E' },
+    { id: 'line', icon: Slash, label: 'Line', key: 'L', hint: 'Shift snaps to 45°' },
+    { id: 'rect', icon: Square, label: 'Rectangle', key: 'U', hint: 'Shift makes a square' },
+    { id: 'fill', icon: PaintBucket, label: 'Fill', key: 'G' },
+    { id: 'replace', icon: Replace, label: 'Replace all', key: 'R' },
   ],
   [
-    { id: 'picker', icon: 'picker', label: 'Pick block (or right-click)', key: 'I' },
-    { id: 'select', icon: 'select', label: 'Select: drag to select, drag inside to move, Ctrl+C / X / V, Delete', key: 'S' },
-    { id: 'measure', icon: 'measure', label: 'Measure: drag between blocks (Shift = straight line, Esc clears)', key: 'M' },
+    { id: 'picker', icon: Pipette, label: 'Pick block', key: 'I', hint: 'Or right-click' },
+    { id: 'select', icon: SquareDashed, label: 'Select', key: 'S', hint: 'Drag inside to move' },
+    { id: 'measure', icon: RulerDimensionLine, label: 'Measure', key: 'M', hint: 'Shift keeps it straight' },
   ],
 ];
+
+/** A vertical or horizontal run of buttons, divided from the next by a line. */
+function Group({ children, vertical }: { children: ReactNode; vertical?: boolean }) {
+  return <div className={vertical ? 'flex flex-col gap-1' : 'flex shrink-0 items-center gap-1'}>{children}</div>;
+}
 
 interface RailProps {
   tool: Tool;
@@ -36,48 +46,36 @@ interface RailProps {
 /** Vertical tool buttons beside the canvas, plus flip / rotate. */
 export function ToolRail({ tool, setTool, selection: sel, onTransform, disabled }: RailProps) {
   const hasSel = !!(sel.rect || sel.floating);
-  const target = hasSel ? 'the selection' : 'the whole art';
+  const target = hasSel ? 'selection' : 'whole art';
   return (
-    <div className="toolrail" role="toolbar" aria-label="Tools" aria-orientation="vertical">
+    <div className="flex shrink-0 flex-col gap-2 overflow-y-auto border-r p-1.5" role="toolbar" aria-label="Tools" aria-orientation="vertical">
       {TOOL_GROUPS.map((group, gi) => (
-        <div key={gi} className="toolrail-group">
-          {group.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              className={`icon-btn ${tool === t.id ? 'is-active' : ''}`}
-              onClick={() => setTool(t.id)}
-              title={`${t.label} (${t.key})`}
-              aria-label={t.label}
-              aria-pressed={tool === t.id}
-              disabled={disabled}
-            >
-              <Icon name={t.icon} />
-            </button>
-          ))}
+        <div key={gi} className="contents">
+          {gi > 0 && <Separator />}
+          <Group vertical>
+            {group.map((t) => (
+              <IconButton
+                key={t.id}
+                icon={t.icon}
+                label={t.label}
+                shortcut={t.key}
+                hint={t.hint}
+                pressed={tool === t.id}
+                onClick={() => setTool(t.id)}
+                disabled={disabled}
+                tooltipSide="right"
+              />
+            ))}
+          </Group>
         </div>
       ))}
-      <div className="toolrail-group">
-        <button type="button" className="icon-btn" onClick={() => onTransform('flipH')} disabled={disabled} title={`Flip ${target} horizontally`} aria-label="Flip horizontally">
-          <Icon name="flipH" />
-        </button>
-        <button type="button" className="icon-btn" onClick={() => onTransform('flipV')} disabled={disabled} title={`Flip ${target} vertically`} aria-label="Flip vertically">
-          <Icon name="flipV" />
-        </button>
-        <button type="button" className="icon-btn" onClick={() => onTransform('rot180')} disabled={disabled} title={`Turn ${target} 180°`} aria-label="Rotate 180 degrees">
-          <Icon name="rot180" />
-        </button>
-        <button
-          type="button"
-          className="icon-btn"
-          onClick={() => onTransform('rotCW')}
-          disabled={disabled || !hasSel}
-          title={hasSel ? 'Turn the selection 90° clockwise' : 'Select an area to turn it 90° (turn whole builds with //rotate in game)'}
-          aria-label="Rotate 90 degrees clockwise"
-        >
-          <Icon name="rotCW" />
-        </button>
-      </div>
+      <Separator />
+      <Group vertical>
+        <IconButton icon={FlipHorizontal2} label="Flip horizontally" hint={`Flips the ${target}`} onClick={() => onTransform('flipH')} disabled={disabled} tooltipSide="right" />
+        <IconButton icon={FlipVertical2} label="Flip vertically" hint={`Flips the ${target}`} onClick={() => onTransform('flipV')} disabled={disabled} tooltipSide="right" />
+        <IconButton icon={RefreshCw} label="Turn 180°" hint={`Turns the ${target}`} onClick={() => onTransform('rot180')} disabled={disabled} tooltipSide="right" />
+        <IconButton icon={RotateCw} label="Turn 90°" hint="Needs a selection" onClick={() => onTransform('rotCW')} disabled={disabled || !hasSel} tooltipSide="right" />
+      </Group>
     </div>
   );
 }
@@ -119,161 +117,81 @@ interface Props {
   disabled: boolean;
 }
 
+/** The row above the canvas: tool options on the left, view options on the right. */
 export function Toolbar(p: Props) {
-  // Picker is position: fixed so the (horizontally scrollable) toolbar never clips it.
-  const [pickerAt, setPickerAt] = useState<{ top: number; left: number } | null>(null);
-  const block = BLOCKS[p.currentBlock] ?? null;
-  const togglePicker = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (pickerAt) return setPickerAt(null);
-    const r = e.currentTarget.getBoundingClientRect();
-    setPickerAt({ top: r.bottom + 6, left: Math.max(8, Math.min(r.left, window.innerWidth - 372)) });
-  };
   const sel = p.selection;
-
   return (
-    <div className="toolbar" role="toolbar" aria-label="Tool options and view">
-      <div className="tool-group brush-size" title="Brush and line size ([ and ])">
-        <span className="muted small size-label">Size</span>
-        <input
-          type="range"
+    <ToolbarRow>
+      <Group>
+        <BlockPicker value={p.currentBlock} onSelect={p.onSelectBlock} orientation={p.orientation} recent={p.recent} disabled={p.disabled} />
+      </Group>
+      <Group>
+        <Slider
+          className="w-20"
           min={1}
           max={5}
-          value={p.brushSize}
-          onChange={(e) => p.setBrushSize(Number(e.target.value))}
+          value={[p.brushSize]}
+          onValueChange={([v]) => p.setBrushSize(v)}
           disabled={p.disabled || !SIZED_TOOLS.includes(p.tool)}
           aria-label="Brush size"
         />
-        <span className="num">{p.brushSize}</span>
+        <span className="w-4 text-center tabular-nums text-muted-foreground">{p.brushSize}</span>
         {p.tool === 'rect' && (
-          <button
-            type="button"
-            className={`icon-btn ${p.rectFilled ? 'is-active' : ''}`}
-            onClick={() => p.setRectFilled(!p.rectFilled)}
-            title={p.rectFilled ? 'Filled rectangle (click for outline)' : 'Outline (click for filled)'}
-            aria-label="Filled rectangle"
-            aria-pressed={p.rectFilled}
-          >
-            <Icon name={p.rectFilled ? 'rectFilled' : 'rect'} />
-          </button>
+          <IconButton icon={SquareSquare} label="Filled rectangle" pressed={p.rectFilled} onClick={() => p.setRectFilled(!p.rectFilled)} />
         )}
-      </div>
-
-      <div className="tool-group">
-        <button
-          type="button"
-          className="block-chip"
-          onClick={togglePicker}
-          aria-expanded={!!pickerAt}
-          disabled={p.disabled}
-          title={`Brush block: ${block?.name ?? 'Air'}`}
-        >
-          <BlockSwatch block={block} orientation={p.orientation} size={22} />
-          <span className="chip-name">{block?.name ?? 'Air'}</span>
-          <Icon name="chevron" size={14} />
-        </button>
-        {pickerAt && (
-          <BlockPicker
-            orientation={p.orientation}
-            current={p.currentBlock}
-            recent={p.recent}
-            style={pickerAt}
-            onSelect={(v) => {
-              p.onSelectBlock(v);
-              setPickerAt(null);
-            }}
-            onClose={() => setPickerAt(null)}
-          />
-        )}
-      </div>
+      </Group>
 
       {p.tool === 'select' && (
-        <div className="tool-group">
-          <button type="button" className="icon-btn" onClick={p.onCopy} disabled={!sel.rect} title="Copy (Ctrl+C)" aria-label="Copy">
-            <Icon name="copy" />
-          </button>
-          <button type="button" className="icon-btn" onClick={p.onCut} disabled={!sel.rect} title="Cut (Ctrl+X)" aria-label="Cut">
-            <Icon name="cut" />
-          </button>
-          <button type="button" className="icon-btn" onClick={p.onPaste} disabled={!sel.clipboard} title="Paste (Ctrl+V): air in the pasted part is see-through" aria-label="Paste">
-            <Icon name="paste" />
-          </button>
-          <button type="button" className="icon-btn" onClick={p.onDelete} disabled={!sel.rect} title="Clear to air (Delete)" aria-label="Clear selection">
-            <Icon name="trash" />
-          </button>
-        </div>
+        <Group>
+          <IconButton icon={Copy} label="Copy" shortcut="Ctrl+C" onClick={p.onCopy} disabled={!sel.rect} />
+          <IconButton icon={Scissors} label="Cut" shortcut="Ctrl+X" onClick={p.onCut} disabled={!sel.rect} />
+          <IconButton icon={ClipboardPaste} label="Paste" shortcut="Ctrl+V" onClick={p.onPaste} disabled={!sel.clipboard} />
+          <IconButton icon={Trash2} label="Clear to air" shortcut="Del" onClick={p.onDelete} disabled={!sel.rect} />
+        </Group>
       )}
 
-      <div className="tool-group">
-        <button type="button" className="icon-btn" onClick={p.onUndo} disabled={!p.canUndo} title="Undo (Ctrl+Z)" aria-label="Undo">
-          <Icon name="undo" />
-        </button>
-        <button type="button" className="icon-btn" onClick={p.onRedo} disabled={!p.canRedo} title="Redo (Ctrl+Y)" aria-label="Redo">
-          <Icon name="redo" />
-        </button>
-      </div>
+      <Group>
+        <IconButton icon={Undo2} label="Undo" shortcut="Ctrl+Z" onClick={p.onUndo} disabled={!p.canUndo} />
+        <IconButton icon={Redo2} label="Redo" shortcut="Ctrl+Y" onClick={p.onRedo} disabled={!p.canRedo} />
+      </Group>
 
-      <div className="tool-group push-right">
+      <div className="ml-auto flex shrink-0 items-center gap-1">
         {p.hasOverlay && (
           <>
-            <button
-              type="button"
-              className={`icon-btn ${p.overlayOn ? 'is-active' : ''}`}
-              onClick={() => p.setOverlayOn(!p.overlayOn)}
-              title="Show the source image over the blocks (O)"
-              aria-label="Source image overlay"
-              aria-pressed={p.overlayOn}
-            >
-              <Icon name="overlay" />
-            </button>
             {p.overlayOn && (
-              <input
-                className="overlay-opacity"
-                type="range"
+              <Slider
+                className="w-16"
                 min={10}
                 max={100}
                 step={5}
-                value={Math.round(p.overlayOpacity * 100)}
-                onChange={(e) => p.setOverlayOpacity(Number(e.target.value) / 100)}
+                value={[Math.round(p.overlayOpacity * 100)]}
+                onValueChange={([v]) => p.setOverlayOpacity(v / 100)}
                 aria-label="Overlay opacity"
-                title={`Overlay opacity ${Math.round(p.overlayOpacity * 100)}%`}
               />
             )}
+            <IconButton icon={ImageIcon} label="Show source image" shortcut="O" pressed={p.overlayOn} onClick={() => p.setOverlayOn(!p.overlayOn)} />
           </>
         )}
-        <button
-          type="button"
-          className={`icon-btn ${p.viewMode === 'textures' ? 'is-active' : ''}`}
+        <IconButton
+          icon={Layers}
+          label="Textures"
+          hint="Off shows flat colours"
+          pressed={p.viewMode === 'textures'}
           onClick={() => p.setViewMode(p.viewMode === 'textures' ? 'colors' : 'textures')}
-          title={p.viewMode === 'textures' ? 'Showing block textures (click for flat colors)' : 'Showing flat colors (click for textures)'}
-          aria-label="Show block textures"
-          aria-pressed={p.viewMode === 'textures'}
-        >
-          <Icon name="texture" />
-        </button>
-        <button
-          type="button"
-          className={`icon-btn ${p.showGrid ? 'is-active' : ''}`}
-          onClick={() => p.setShowGrid(!p.showGrid)}
-          title="Grid lines"
-          aria-label="Grid lines"
-          aria-pressed={p.showGrid}
-        >
-          <Icon name="grid" />
-        </button>
-        <button
-          type="button"
-          className={`icon-btn ${p.showRulers ? 'is-active' : ''}`}
-          onClick={() => p.setShowRulers(!p.showRulers)}
-          title="Rulers: block distances along the top and right edges"
-          aria-label="Rulers"
-          aria-pressed={p.showRulers}
-        >
-          <Icon name="ruler" />
-        </button>
-        <button type="button" className="icon-btn" onClick={p.onFit} title="Fit to view (F)" aria-label="Fit to view" disabled={p.disabled}>
-          <Icon name="fit" />
-        </button>
+        />
+        <IconButton icon={Grid3x3} label="Grid" pressed={p.showGrid} onClick={() => p.setShowGrid(!p.showGrid)} />
+        <IconButton icon={Ruler} label="Rulers" pressed={p.showRulers} onClick={() => p.setShowRulers(!p.showRulers)} />
+        <IconButton icon={Scan} label="Fit to view" shortcut="F" onClick={p.onFit} disabled={p.disabled} />
       </div>
+    </ToolbarRow>
+  );
+}
+
+/** One fixed-height row: a wrapping toolbar would shift the canvas under the cursor. */
+export function ToolbarRow({ children }: { children: ReactNode }) {
+  return (
+    <div className="@container flex h-12 shrink-0 items-center gap-4 overflow-x-auto overflow-y-hidden border-b px-3 [scrollbar-width:thin]" role="toolbar" aria-label="Tool options and view">
+      {children}
     </div>
   );
 }

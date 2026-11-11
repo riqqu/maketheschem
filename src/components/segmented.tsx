@@ -47,7 +47,7 @@ export function Segmented<T extends string | number>({
             key={String(o.value)}
             value={String(o.value)}
             disabled={o.disabled}
-            className="h-7 flex-1 rounded-md! px-2 text-[0.8rem] text-muted-foreground hover:bg-transparent data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm dark:data-[state=on]:bg-input/50"
+            className="h-7 flex-1 rounded-md! px-2 text-[0.8rem] text-muted-foreground hover:bg-transparent hover:text-foreground aria-checked:bg-background aria-checked:text-foreground aria-checked:shadow-sm dark:aria-checked:bg-input/50"
           >
             {o.label}
           </ToggleGroupItem>

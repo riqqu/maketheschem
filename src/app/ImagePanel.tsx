@@ -1,57 +1,42 @@
-import { useRef } from 'react';
-import { ACCEPT_ATTR, type LoadedImage } from '../lib/image';
-import { Icon } from './Icon';
+import { Grid2x2, ImageUp } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Note } from '@/components/note';
+import type { LoadedImage } from '../lib/image';
 
 interface Props {
   image: LoadedImage | null;
-  onFile: (file: File) => void;
+  /** Opens the file chooser. */
+  onOpen: () => void;
   onBlank: () => void;
   error: string | null;
 }
 
-export function ImagePanel({ image, onFile, onBlank, error }: Props) {
-  const input = useRef<HTMLInputElement>(null);
-  const choose = () => input.current?.click();
-
+/** The source image: open one, change it, or start a blank canvas. */
+export function ImagePanel({ image, onOpen, onBlank, error }: Props) {
   return (
-    <div className="image-panel">
-      <input
-        ref={input}
-        type="file"
-        accept={ACCEPT_ATTR}
-        hidden
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) onFile(f);
-          e.target.value = '';
-        }}
-      />
-      {image ? (
-        <div className="thumb-row">
-          <img className="thumb" src={image.url} alt="" />
-          <div className="thumb-meta">
-            <span className="thumb-name" title={image.name}>{image.name}</span>
-            <span className="muted small">
-              {image.naturalWidth} × {image.naturalHeight}px
-            </span>
-            <button type="button" className="btn small" onClick={choose}>
-              <Icon name="upload" size={15} /> Change
-            </button>
+    <div className="grid gap-3">
+      {image && (
+        <div className="flex items-center gap-3">
+          <img className="checkerboard size-14 shrink-0 rounded-md border object-contain" src={image.url} alt="" />
+          <div className="min-w-0">
+            <div className="truncate font-medium" title={image.name}>
+              {image.name}
+            </div>
+            <div className="text-xs tabular-nums text-muted-foreground">
+              {image.naturalWidth} × {image.naturalHeight}
+            </div>
           </div>
         </div>
-      ) : (
-        <button type="button" className="dropzone" onClick={choose}>
-          <Icon name="image" size={28} />
-          <span>
-            <strong>Choose an image</strong> or drop it anywhere
-          </span>
-          <span className="muted small">PNG, JPG, GIF or WebP, a .schem to edit, or a 3D model · stays on your computer</span>
-        </button>
       )}
-      <button type="button" className="link-btn small" onClick={onBlank}>
-        <Icon name="blank" size={14} /> {image ? 'Switch to a blank canvas' : 'Or start with a blank canvas'}
-      </button>
-      {error && <p className="note warn">{error}</p>}
+      <div className="grid grid-cols-2 gap-2">
+        <Button variant="outline" onClick={onOpen}>
+          <ImageUp /> {image ? 'Change' : 'Open image'}
+        </Button>
+        <Button variant="outline" onClick={onBlank}>
+          <Grid2x2 /> Blank canvas
+        </Button>
+      </div>
+      {error && <Note>{error}</Note>}
     </div>
   );
 }

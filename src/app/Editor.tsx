@@ -856,7 +856,7 @@ export function Editor(props: Props) {
   };
 
   return (
-    <div className="editor" ref={wrapRef}>
+    <div className="absolute inset-0 overflow-hidden [&_canvas]:block [&_canvas]:touch-none" ref={wrapRef}>
       <canvas
         ref={canvasRef}
         onPointerDown={onPointerDown}

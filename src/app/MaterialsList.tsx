@@ -1,8 +1,9 @@
 import { memo, useState } from 'react';
+import { Check, Copy } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { BLOCKS } from '../data';
 import type { Orientation } from '../core/types';
 import { BlockSwatch } from './BlockSwatch';
-import { Icon } from './Icon';
 
 const fmt = new Intl.NumberFormat();
 
@@ -25,7 +26,7 @@ export const MaterialsList = memo(function MaterialsList({
   const rows = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const total = rows.reduce((s, [, n]) => s + n, 0);
 
-  if (rows.length === 0) return <p className="muted pad">No blocks yet. Generate or draw something first.</p>;
+  if (rows.length === 0) return <p className="p-4 text-muted-foreground">No blocks yet.</p>;
 
   const copy = async () => {
     const text = rows.map(([v, n]) => `${BLOCKS[v].name}: ${n} (${stacksText(n)})`).join('\n');
@@ -39,23 +40,23 @@ export const MaterialsList = memo(function MaterialsList({
   };
 
   return (
-    <div className="materials">
-      <div className="materials-head">
-        <p className="small">
-          <strong>{fmt.format(total)}</strong> blocks · {rows.length} types
-          {total >= 1728 && <span className="muted"> · ≈{(total / 1728).toFixed(1)} shulker boxes</span>}
+    <div>
+      <div className="flex items-center justify-between gap-2 px-4 py-3">
+        <p className="tabular-nums">
+          <span className="font-medium">{fmt.format(total)}</span>
+          <span className="text-muted-foreground"> blocks · {rows.length} types</span>
         </p>
-        <button type="button" className="btn small" onClick={copy}>
-          <Icon name="copy" size={15} /> {copied ? 'Copied' : 'Copy list'}
-        </button>
+        <Button variant="outline" size="sm" onClick={copy}>
+          {copied ? <Check /> : <Copy />} {copied ? 'Copied' : 'Copy'}
+        </Button>
       </div>
-      <ul className="materials-list">
+      <ul className="pb-2">
         {rows.map(([v, n]) => (
-          <li key={v}>
-            <BlockSwatch block={BLOCKS[v]} orientation={orientation} size={22} />
-            <span className="mat-name">{BLOCKS[v].name}</span>
-            <span className="mat-count num">{fmt.format(n)}</span>
-            <span className="mat-stacks muted small num">{stacksText(n)}</span>
+          <li key={v} className="grid grid-cols-[20px_minmax(0,1fr)_auto_64px] items-center gap-3 px-4 py-1.5 hover:bg-muted/60">
+            <BlockSwatch block={BLOCKS[v]} orientation={orientation} size={20} />
+            <span className="truncate">{BLOCKS[v].name}</span>
+            <span className="text-right font-medium tabular-nums">{fmt.format(n)}</span>
+            <span className="text-right text-xs tabular-nums text-muted-foreground">{stacksText(n)}</span>
           </li>
         ))}
       </ul>

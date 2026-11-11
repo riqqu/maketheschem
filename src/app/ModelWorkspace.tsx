@@ -1,5 +1,13 @@
 // The "3D model" mode: load a GLB/glTF/STL, turn it into blocks, preview it in 3D and export it.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Box, Scan, Upload } from 'lucide-react';
+import { toast } from 'sonner';
+import { Field, SliderField } from '@/components/field';
+import { IconButton } from '@/components/icon-button';
+import { Note } from '@/components/note';
+import { Section } from '@/components/section';
+import { Segmented } from '@/components/segmented';
+import { Button } from '@/components/ui/button';
 import { Matrix4 } from 'three';
 import { MAX_MODEL_SIZE, MIN_MODEL_SIZE, voxelTransform } from '../core/meshVoxels';
 import type { VoxelHit } from '../core/voxelRay';
@@ -12,30 +20,22 @@ import { squareThumbnail } from '../lib/render';
 import { saveJSON } from '../lib/storage';
 import { BlockPalettePanel } from './BlockPalettePanel';
 import { BlockPicker } from './BlockPicker';
-import { BlockSwatch } from './BlockSwatch';
-import { ExportPanel, sanitizeName } from './ExportPanel';
+import { ExportDialog, sanitizeName } from './ExportDialog';
 import { HistoryPanel } from './HistoryPanel';
-import { Icon } from './Icon';
+import { AppLayout, BusyPill, EmptyState, SideTabs, Stage, StageBanner, StatusBar, type SideTab } from './Layout';
 import { MaterialsList } from './MaterialsList';
 import { ModelPreview, type ModelPreviewHandle, type PreviewView } from './ModelPreview';
 import {
   BLOCK_TILES, LS_MODEL_SETTINGS, loadModelSettings, MODEL_SIZE_PRESETS, modelPalettes, sanitizeModelSettings, type ModelSettings,
 } from './modelSettings';
 import { MatchingPanel } from './SettingsPanel';
+import { ToolbarRow } from './Toolbar';
 import type { ModelBuildResult } from '../worker/model.worker';
 import { useAutosaveHistory, type HistoryStore } from './useAutosaveHistory';
 import { useModelBuilder } from './useModelBuilder';
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="panel-section">
-      <h2>{title}</h2>
-      {children}
-    </section>
-  );
-}
-
 const FRONT = ['south', 'west', 'north', 'east'];
+const notify = (message: string) => void toast(message);
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 
 /** Most models kept in the history; the oldest are dropped beyond this. */
@@ -43,8 +43,6 @@ const MODEL_HISTORY_LIMIT = 40;
 type SavedModel = Awaited<ReturnType<typeof loadModel>>;
 const MODEL_STORE: HistoryStore<ModelMeta, SavedModel> = { list: listModels, load: loadModel, remove: deleteModels };
 const describeModel = (m: ModelMeta) => `${m.width} × ${m.height} × ${m.length} · ${plural(m.blockCount, 'block')}`;
-const MODEL_EMPTY =
-  'Your models are saved here automatically with their settings, one entry per model file. Nothing is uploaded: they stay in this browser.';
 /** An entry is the model file plus its settings; the blocks are rebuilt from them when it's opened. */
 const modelSignature = (name: string, s: ModelSettings) => JSON.stringify([name, s]);
 
@@ -54,9 +52,11 @@ interface Props {
   /** A model file dropped or chosen elsewhere in the app; opened whenever `n` changes. */
   request: { file: File; n: number } | null;
   atlas: HTMLImageElement | null;
+  /** The Pixel art / 3D model switch for the top bar. */
+  modeSwitch: ReactNode;
 }
 
-export function ModelWorkspace({ active, request, atlas }: Props) {
+export function ModelWorkspace({ active, request, atlas, modeSwitch }: Props) {
   const builder = useModelBuilder();
   const previewRef = useRef<ModelPreviewHandle>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -72,16 +72,8 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
   const [resultKey, setResultKey] = useState<string | null>(null);
   const [hover, setHover] = useState<VoxelHit | null>(null);
   const [view, setView] = useState<PreviewView>('blocks');
-  const [tab, setTab] = useState<'blocks' | 'materials' | 'history'>('blocks');
+  const [tab, setTab] = useState<SideTab>('blocks');
   const [name, setName] = useState('model');
-  const [pickerAt, setPickerAt] = useState<{ top: number; left: number } | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!notice) return;
-    const t = setTimeout(() => setNotice(null), 5000);
-    return () => clearTimeout(t);
-  }, [notice]);
 
   // ---- history (autosave) -------------------------------------------------------------------
 
@@ -92,7 +84,7 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
   const hist = useAutosaveHistory<ModelMeta, SavedModel, Omit<ModelSource, 'id'>>({
     store: MODEL_STORE,
     limit: MODEL_HISTORY_LIMIT,
-    onError: setNotice,
+    onError: notify,
     // Saved once the blocks match the current settings, so the thumbnail and block count are right.
     signature: () => {
       const s = live.current;
@@ -170,13 +162,13 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
     try {
       const rec = await hist.open(id);
       if (!rec) {
-        setNotice('That model is no longer in the history.');
+        notify('That model is no longer in the history.');
         return;
       }
       const file = new File([rec.source.blob], rec.source.name, { type: rec.source.type });
       await load(file, { meta: rec.meta, settings: sanitizeModelSettings(rec.data.settings, settings) });
     } catch (e) {
-      setNotice(`Couldn’t open that model: ${e instanceof Error ? e.message : String(e)}`);
+      notify(`Couldn’t open that model: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
   const openSavedRef = useRef(openSaved);
@@ -279,35 +271,38 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
   const fitKey = model ? `${model.key}|${settings.up}|${settings.turns}` : '';
   const snapshot = useCallback(() => previewRef.current?.snapshot() ?? Promise.resolve(null), []);
 
+  useEffect(() => {
+    if (builder.error) toast.error(`Building failed: ${builder.error}`);
+  }, [builder.error]);
+
   if (!active) return null;
 
   // ---- UI -----------------------------------------------------------------------------------
 
   const dims = placement?.dims;
-  const singleBlock = single !== null ? BLOCKS[single] : null;
-  const togglePicker = (e: React.MouseEvent<HTMLButtonElement>) => {
-    if (pickerAt) return setPickerAt(null);
-    const r = e.currentTarget.getBoundingClientRect();
-    setPickerAt({ top: Math.min(r.bottom + 6, window.innerHeight - 420), left: Math.max(8, Math.min(r.left, window.innerWidth - 372)) });
-  };
+  const openFile = () => fileInput.current?.click();
 
-  let status: ReactNode = <span className="muted">{model ? 'Hover the blocks to inspect them · drag to turn, right-drag to pan, wheel to zoom' : 'No model loaded'}</span>;
+  let status: ReactNode = <span className="text-muted-foreground">{model ? 'Drag to turn · right-drag to pan · wheel to zoom' : 'No model'}</span>;
   if (hover) {
     status = (
       <>
-        <span className="num">
+        <span className="tabular-nums text-muted-foreground">
           x {hover.x} · y {hover.y} · z {hover.z}
         </span>
-        <span className="status-block">{BLOCKS[hover.block]?.name}</span>
+        <span className="truncate font-medium">{BLOCKS[hover.block]?.name}</span>
       </>
     );
   }
 
   return (
-    <>
-      <aside className="sidebar left">
-        <Section title="3D model">
-          <div className="image-panel">
+    <AppLayout
+      modeSwitch={modeSwitch}
+      actions={
+        <ExportDialog target={{ kind: 'model', volume: result?.volume ?? null, snapshot }} blockCount={blockCount} name={name} setName={setName} />
+      }
+      left={
+        <>
+          <Section title="Source">
             <input
               ref={fileInput}
               type="file"
@@ -319,179 +314,123 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
                 e.target.value = '';
               }}
             />
-            {model ? (
-              <div className="thumb-row">
-                <div className="thumb model-thumb" aria-hidden="true">
-                  <Icon name="cube" size={30} />
+            <div className="grid gap-3">
+              {model && (
+                <div className="flex items-center gap-3">
+                  <div className="grid size-14 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground" aria-hidden="true">
+                    <Box className="size-6" strokeWidth={1.5} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="truncate font-medium" title={model.name}>
+                      {model.name}
+                    </div>
+                    <div className="text-xs tabular-nums text-muted-foreground">{plural(model.triangles, 'triangle')}</div>
+                  </div>
                 </div>
-                <div className="thumb-meta">
-                  <span className="thumb-name" title={model.name}>{model.name}</span>
-                  <span className="muted small">{plural(model.triangles, 'triangle')}</span>
-                  <button type="button" className="btn small" onClick={() => fileInput.current?.click()} disabled={loading}>
-                    <Icon name="upload" size={15} /> Change
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button type="button" className="dropzone" onClick={() => fileInput.current?.click()} disabled={loading}>
-                <Icon name="cube" size={28} />
-                <span>
-                  <strong>{loading ? 'Loading…' : 'Choose a 3D model'}</strong> or drop it anywhere
-                </span>
-                <span className="muted small">GLB, glTF or STL · stays on your computer</span>
-              </button>
-            )}
-            {model?.warnings.map((w) => (
-              <p key={w} className="note info">{w}</p>
-            ))}
-            {loadError && <p className="note warn">{loadError}</p>}
-          </div>
-        </Section>
-
-        <Section title="Size & orientation">
-          <div className="field">
-            <div className="slider-label">
-              <span className="field-label">Longest side</span>
-              <span className="num small">{settings.size} blocks</span>
+              )}
+              <Button variant="outline" onClick={openFile} disabled={loading}>
+                <Upload /> {loading ? 'Loading…' : model ? 'Change' : 'Open model'}
+              </Button>
+              {model?.warnings.map((w) => (
+                <Note key={w} tone="info">
+                  {w}
+                </Note>
+              ))}
+              {loadError && <Note>{loadError}</Note>}
             </div>
-            <input
-              type="range"
+          </Section>
+
+          <Section title="Size">
+            <SliderField
+              label="Longest side"
+              value={settings.size}
+              display={dims ? `${dims[0]} × ${dims[1]} × ${dims[2]}` : settings.size}
               min={MIN_MODEL_SIZE}
               max={MAX_MODEL_SIZE}
-              value={settings.size}
-              onChange={(e) => update({ size: Number(e.target.value) })}
-              aria-label="Blocks along the longest side"
+              onChange={(size) => update({ size })}
             />
-            <div className="segmented small" role="group" aria-label="Size presets">
-              {MODEL_SIZE_PRESETS.map((n) => (
-                <button key={n} type="button" className={settings.size === n ? 'is-active' : ''} onClick={() => update({ size: n })}>
-                  {n}
-                </button>
-              ))}
-            </div>
-            {dims && (
-              <p className="small muted num">
-                {dims[0]} × {dims[1]} × {dims[2]} (W × H × L)
-                {dims[1] > 384 ? ' · taller than the world height (384)' : ''}
-              </p>
-            )}
-          </div>
-
-          <div className="field">
-            <span className="field-label">Up axis</span>
-            <div className="segmented small" role="group" aria-label="Up axis">
-              <button type="button" className={settings.up === 'y' ? 'is-active' : ''} onClick={() => update({ up: 'y' })} title="glTF and most game models">
-                Y up
-              </button>
-              <button type="button" className={settings.up === 'z' ? 'is-active' : ''} onClick={() => update({ up: 'z' })} title="Most STL, CAD and 3D-printing models">
-                Z up
-              </button>
-            </div>
-            <p className="small muted">Switch it if the model lies on its back.</p>
-          </div>
-
-          <div className="field">
-            <span className="field-label">
-              Turn <span className="muted">· front faces {FRONT[settings.turns]}</span>
-            </span>
-            <div className="segmented small" role="group" aria-label="Turn">
-              {[0, 1, 2, 3].map((t) => (
-                <button key={t} type="button" className={settings.turns === t ? 'is-active' : ''} onClick={() => update({ turns: t })}>
-                  {t * 90}°
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="field">
-            <span className="field-label">Inside</span>
-            <div className="segmented small" role="group" aria-label="Inside">
-              <button type="button" className={settings.interior === 'hollow' ? 'is-active' : ''} onClick={() => update({ interior: 'hollow' })}>
-                Hollow
-              </button>
-              <button type="button" className={settings.interior === 'solid' ? 'is-active' : ''} onClick={() => update({ interior: 'solid' })}>
-                Solid
-              </button>
-            </div>
-            <p className="small muted">
-              {settings.interior === 'hollow'
-                ? 'A one-block shell: far fewer blocks, looks the same from outside.'
-                : 'Filled inside with the nearest surface block. Models with holes stay hollow.'}
-            </p>
-          </div>
-
-          <div className="field">
-            <span className="field-label">Colours</span>
-            <div className="segmented small" role="group" aria-label="Colours">
-              <button type="button" className={settings.colorMode === 'match' ? 'is-active' : ''} onClick={() => update({ colorMode: 'match' })}>
-                Match model
-              </button>
-              <button type="button" className={settings.colorMode === 'single' ? 'is-active' : ''} onClick={() => update({ colorMode: 'single' })}>
-                One block
-              </button>
-            </div>
-            {settings.colorMode === 'single' && (
-              <>
-                <button type="button" className="block-chip" onClick={togglePicker} aria-expanded={!!pickerAt} title="Block for the whole model">
-                  <BlockSwatch block={singleBlock} orientation="wall" size={22} />
-                  <span className="chip-name">{singleBlock?.name ?? 'Choose a block'}</span>
-                  <Icon name="chevron" size={14} />
-                </button>
-                {pickerAt && (
-                  <BlockPicker
-                    orientation="wall"
-                    current={single ?? 0}
-                    recent={[]}
-                    style={pickerAt}
-                    onSelect={(v) => {
-                      update({ singleBlock: BLOCKS[v].id });
-                      setPickerAt(null);
-                    }}
-                    onClose={() => setPickerAt(null)}
-                  />
-                )}
-              </>
-            )}
-          </div>
-        </Section>
-
-        {settings.colorMode === 'match' && (
-          <Section title="Matching">
-            <MatchingPanel settings={settings} update={update} noDiffusion />
+            <Segmented label="Size presets" value={settings.size} onChange={(size) => update({ size })} options={MODEL_SIZE_PRESETS.map((n) => ({ value: n, label: n }))} />
+            {dims && dims[1] > 384 && <Note>Taller than the world height (384).</Note>}
+            <Field label="Up axis">
+              <Segmented
+                label="Up axis"
+                value={settings.up}
+                onChange={(up) => update({ up })}
+                options={[
+                  { value: 'y', label: 'Y up', tooltip: 'glTF and most game models' },
+                  { value: 'z', label: 'Z up', tooltip: 'Most STL and CAD models' },
+                ]}
+              />
+            </Field>
+            <Field label="Turn" value={`front faces ${FRONT[settings.turns]}`}>
+              <Segmented label="Turn" value={settings.turns} onChange={(turns) => update({ turns })} options={[0, 1, 2, 3].map((t) => ({ value: t, label: `${t * 90}°` }))} />
+            </Field>
           </Section>
-        )}
 
-        <Section title="Export">
-          <ExportPanel target={{ kind: 'model', volume: result?.volume ?? null, snapshot }} blockCount={blockCount} name={name} setName={setName} />
-        </Section>
-      </aside>
+          <Section title="Style">
+            <Field label="Inside">
+              <Segmented
+                label="Inside"
+                value={settings.interior}
+                onChange={(interior) => update({ interior })}
+                options={[
+                  { value: 'hollow', label: 'Hollow', tooltip: 'A one-block shell: far fewer blocks' },
+                  { value: 'solid', label: 'Solid', tooltip: 'Filled with the nearest surface block' },
+                ]}
+              />
+            </Field>
+            <Field label="Colours">
+              <Segmented
+                label="Colours"
+                value={settings.colorMode}
+                onChange={(colorMode) => update({ colorMode })}
+                options={[
+                  { value: 'match', label: 'Match model' },
+                  { value: 'single', label: 'One block' },
+                ]}
+              />
+              {settings.colorMode === 'single' && (
+                <BlockPicker
+                  value={single}
+                  onSelect={(v) => update({ singleBlock: BLOCKS[v].id })}
+                  orientation="wall"
+                  placeholder="Choose a block"
+                  className="w-full"
+                />
+              )}
+            </Field>
+          </Section>
 
-      <main className="workspace">
-        <div className="toolbar">
-          <div className="tool-group">
-            <div className="segmented small" role="group" aria-label="Show">
-              <button type="button" className={view === 'blocks' ? 'is-active' : ''} onClick={() => setView('blocks')} disabled={!model}>
-                Blocks
-              </button>
-              <button type="button" className={view === 'source' ? 'is-active' : ''} onClick={() => setView('source')} disabled={!model}>
-                Original model
-              </button>
+          {settings.colorMode === 'match' && (
+            <Section title="Matching">
+              <MatchingPanel settings={settings} update={update} noDiffusion />
+            </Section>
+          )}
+        </>
+      }
+      main={
+        <>
+          <ToolbarRow>
+            <Segmented
+              label="Show"
+              value={view}
+              onChange={setView}
+              disabled={!model}
+              className="w-56"
+              options={[
+                { value: 'blocks', label: 'Blocks' },
+                { value: 'source', label: 'Original' },
+              ]}
+            />
+            <div className="ml-auto">
+              <IconButton icon={Scan} label="Fit to view" onClick={() => previewRef.current?.fit()} disabled={!result} />
             </div>
-          </div>
-          <div className="tool-group push-right">
-            <button type="button" className="icon-btn" onClick={() => previewRef.current?.fit()} disabled={!result} title="Fit the model in view" aria-label="Fit">
-              <Icon name="fit" />
-            </button>
-          </div>
-        </div>
-        <div className="work-row">
-          <div className="stage">
-            {(builder.error || noBlocks || notice) && (
-              <div className="stage-banners">
-                {notice && <div className="banner info">{notice}</div>}
-                {noBlocks && <div className="banner">No blocks are enabled. Choose some in the Blocks tab.</div>}
-                {builder.error && <div className="banner">Building failed: {builder.error}</div>}
-              </div>
+          </ToolbarRow>
+          <Stage>
+            {noBlocks && (
+              <StageBanner>
+                <span className="pr-3">No blocks are enabled. Choose some in the Blocks tab.</span>
+              </StageBanner>
             )}
             <ModelPreview
               faces={result?.faces ?? null}
@@ -506,62 +445,45 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
               onHover={setHover}
             />
             {!model && (
-              <div className="empty">
-                <Icon name="cube" size={40} />
-                <p>
-                  <strong>Drop a 3D model here</strong> or choose one on the left.
-                </p>
-                <p className="muted small">
-                  GLB / glTF (with colours and textures) or STL. It’s turned into blocks right in your browser and exported as a
-                  3D .schem or .litematic{hist.available ? ', and every model you open is kept in the History tab' : ''}.
-                </p>
-              </div>
+              <EmptyState icon={Box} title="Drop a 3D model">
+                <Button onClick={openFile} disabled={loading}>
+                  <Upload /> Open model
+                </Button>
+              </EmptyState>
             )}
-            {(builder.busy || loading) && <div className="busy">{loading ? 'Loading model…' : 'Building…'}</div>}
-          </div>
-        </div>
-        <footer className="statusbar">
-          <div className="status-left">{status}</div>
-          <div className="status-right muted num">
-            {result &&
+            {(builder.busy || loading) && <BusyPill>{loading ? 'Loading…' : 'Building…'}</BusyPill>}
+          </Stage>
+          <StatusBar
+            left={status}
+            right={
+              result &&
               `${result.volume.width} × ${result.volume.height} × ${result.volume.length} · ${plural(blockCount, 'block')}` +
-                (result.interiorCount ? ` (${result.interiorCount.toLocaleString()} inside)` : '')}
-          </div>
-        </footer>
-      </main>
-
-      <aside className="sidebar right">
-        <div className="tabs" role="tablist">
-          <button type="button" role="tab" aria-selected={tab === 'blocks'} className={tab === 'blocks' ? 'is-active' : ''} onClick={() => setTab('blocks')}>
-            Blocks <span className="badge">{settings.enabled.length}</span>
-          </button>
-          <button type="button" role="tab" aria-selected={tab === 'materials'} className={tab === 'materials' ? 'is-active' : ''} onClick={() => setTab('materials')}>
-            Materials <span className="badge">{counts.size}</span>
-          </button>
-          {hist.available && (
-            <button type="button" role="tab" aria-selected={tab === 'history'} className={tab === 'history' ? 'is-active' : ''} onClick={() => setTab('history')}>
-              History <span className="badge">{hist.list.length}</span>
-            </button>
-          )}
-        </div>
-        <div className="tab-body">
-          {tab === 'blocks' && <EnabledBlocks settings={settings} update={update} />}
-          {tab === 'materials' && <MaterialsList counts={counts} orientation="wall" />}
-          {tab === 'history' && hist.available && (
-            <HistoryPanel
-              list={hist.list}
-              currentId={hist.currentId}
-              onOpen={(id) => void openSaved(id)}
-              onDelete={(id) => void deleteSaved(id)}
-              describe={describeModel}
-              emptyText={MODEL_EMPTY}
-              limit={MODEL_HISTORY_LIMIT}
-              smoothThumbs
-            />
-          )}
-        </div>
-      </aside>
-    </>
+                (result.interiorCount ? ` (${result.interiorCount.toLocaleString()} inside)` : '')
+            }
+          />
+        </>
+      }
+      right={
+        <SideTabs
+          tab={tab}
+          setTab={setTab}
+          blocks={<EnabledBlocks settings={settings} update={update} />}
+          materials={<MaterialsList counts={counts} orientation="wall" />}
+          history={
+            hist.available ? (
+              <HistoryPanel
+                list={hist.list}
+                currentId={hist.currentId}
+                onOpen={(id) => void openSaved(id)}
+                onDelete={(id) => void deleteSaved(id)}
+                describe={describeModel}
+                smoothThumbs
+              />
+            ) : null
+          }
+        />
+      }
+    />
   );
 }
 
@@ -570,7 +492,11 @@ function EnabledBlocks({ settings, update }: { settings: ModelSettings; update: 
   const setEnabled = useCallback((next: Set<string>) => update({ enabled: [...next] }), [update]);
   return (
     <>
-      {settings.colorMode === 'single' && <p className="note info pad-note">“One block” is on, so this list isn’t used right now.</p>}
+      {settings.colorMode === 'single' && (
+        <Note tone="info" className="mx-4 mt-4">
+          Not used while “One block” is on.
+        </Note>
+      )}
       <BlockPalettePanel enabled={enabled} setEnabled={setEnabled} orientation="wall" />
     </>
   );

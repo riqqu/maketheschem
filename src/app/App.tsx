@@ -1,4 +1,12 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Box, Grid2x2, Image as ImageIcon, ImageUp, RulerDimensionLine, SquareDashed } from 'lucide-react';
+import { toast } from 'sonner';
+import { confirm, ConfirmDialog } from '@/components/confirm';
+import { Section } from '@/components/section';
+import { Segmented } from '@/components/segmented';
+import { Button } from '@/components/ui/button';
+import { Toaster } from '@/components/ui/sonner';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { ATLAS_URL, BLOCKS, blockData, blockIndexById } from '../data';
 import { countBlocks, createGrid, History, resizeGrid, type Grid } from '../core/grid';
 import { layout } from '../core/layout';
@@ -7,17 +15,17 @@ import { parseSchem, schemToGrid } from '../core/schemRead';
 import { decodeGrid } from '../core/serialize';
 import type { ClipTransform } from '../core/shapes';
 import { AIR, type Orientation } from '../core/types';
-import { ACCEPTED_TYPES, isModelFile, isSchemFile, loadImageFile, type LoadedImage } from '../lib/image';
+import { ACCEPT_ATTR, ACCEPTED_TYPES, isModelFile, isSchemFile, loadImageFile, type LoadedImage } from '../lib/image';
 import { loadJSON, saveJSON } from '../lib/storage';
 import type { BackgroundInfo } from '../worker/generate.worker';
 import { BlockPalettePanel } from './BlockPalettePanel';
 import { Editor, type EditorHandle, type SelectionInfo, type Tool, type ViewMode } from './Editor';
-import { ExportPanel, sanitizeName } from './ExportPanel';
+import { ExportDialog, sanitizeName } from './ExportDialog';
 import { HistoryPanel } from './HistoryPanel';
-import { Icon } from './Icon';
 import { ImagePanel } from './ImagePanel';
+import { AppLayout, BusyPill, EmptyState, SideTabs, Stage, StageBanner, StatusBar, type SideTab } from './Layout';
 import { MaterialsList } from './MaterialsList';
-import { MatchingPanel, SettingsPanel } from './SettingsPanel';
+import { MatchingPanel, SizePanel, SourceOptions } from './SettingsPanel';
 import {
   buildPalette, generationKeys, LAST_SETTINGS_KEY, loadLastSettings, sanitizeSettings, type ArtSettings, type GenerationKeys,
 } from './settings';
@@ -44,26 +52,6 @@ function useLoadedImage(url: string | null) {
   return img;
 }
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="panel-section">
-      <h2>{title}</h2>
-      {children}
-    </section>
-  );
-}
-
-function Logo() {
-  return (
-    <svg width="22" height="22" viewBox="0 0 4 4" aria-hidden="true" shapeRendering="crispEdges">
-      <rect width="2" height="2" fill="#35a7c4" />
-      <rect x="2" width="2" height="2" fill="#f0b020" />
-      <rect y="2" width="2" height="2" fill="#a03030" />
-      <rect x="2" y="2" width="2" height="2" fill="#508030" />
-    </svg>
-  );
-}
-
 const TOOL_KEYS: Record<string, Tool> = {
   b: 'brush', e: 'eraser', i: 'picker', g: 'fill', r: 'replace', m: 'measure', l: 'line', u: 'rect', s: 'select',
 };
@@ -73,12 +61,30 @@ type Mode = 'pixel' | 'model';
 const NO_SELECTION: SelectionInfo = { rect: null, floating: false, clipboard: false };
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+const notify = (message: string) => void toast(message);
+
+/** Pixel art / 3D model: the same control in both workspaces' top bar. */
+function ModeSwitch({ mode, setMode }: { mode: Mode; setMode: (m: Mode) => void }) {
+  return (
+    <Segmented
+      label="Mode"
+      value={mode}
+      onChange={setMode}
+      className="w-60 max-[560px]:w-44"
+      options={[
+        { value: 'pixel', label: <><ImageIcon /> Pixel art</> },
+        { value: 'model', label: <><Box /> 3D model</> },
+      ]}
+    />
+  );
+}
 
 export default function App() {
   const atlas = useLoadedImage(ATLAS_URL);
   const gen = useGenerator();
   const history = useRef(new History()).current;
   const editorRef = useRef<EditorHandle>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const [image, setImage] = useState<LoadedImage | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
@@ -92,7 +98,6 @@ export default function App() {
   const [edited, setEdited] = useState(false);
   /** Settings the current grid was made with. */
   const [lastGen, setLastGen] = useState<GenerationKeys | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   // Undo step of our own background erase. While it is the newest step, a new erase replaces it (live slider)
   // and switching the option off takes it back. Ids survive undo/redo, so a redone erase is recognised again.
   const [eraseId, setEraseIdState] = useState<number | null>(null);
@@ -123,7 +128,7 @@ export default function App() {
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [fitSignal, setFitSignal] = useState(0);
-  const [tab, setTab] = useState<'blocks' | 'materials' | 'history'>('blocks');
+  const [tab, setTab] = useState<SideTab>('blocks');
   const [name, setName] = useState('pixel_art');
   const [dragOver, setDragOver] = useState(false);
   const [mode, setModeState] = useState<Mode>(() => (loadJSON<string>(LS_MODE, 'pixel') === 'model' ? 'model' : 'pixel'));
@@ -150,7 +155,7 @@ export default function App() {
 
   const art = useArtHistory(
     () => ({ name: sanitizeName(name), settings, grid, edited, hasImage: !!image, blockCount }),
-    setNotice,
+    notify,
   );
   useEffect(() => art.schedule(), [grid, version, settings, name, edited, image, art.schedule]);
 
@@ -244,7 +249,7 @@ export default function App() {
       setVersion((v) => v + 1);
       setBgInfo(r.background);
       setLastGen(gen0);
-      if (erased) setNotice(`Erased ${erased.toLocaleString()} background blocks. Your edits were kept (Ctrl+Z to undo).`);
+      if (erased) notify(`Erased ${erased.toLocaleString()} background blocks. Your edits were kept (Ctrl+Z to undo).`);
     });
   };
   const eraseRef = useRef(runErase);
@@ -258,10 +263,8 @@ export default function App() {
   }, [genKey, lastGenKey, edited, eraseOnly, palette.length]);
 
   useEffect(() => {
-    if (!notice) return;
-    const t = setTimeout(() => setNotice(null), 5000);
-    return () => clearTimeout(t);
-  }, [notice]);
+    if (gen.error) toast.error(`Generation failed: ${gen.error}`);
+  }, [gen.error]);
 
   // Blank canvas: resizing keeps the drawing (top-left anchored).
   useEffect(() => {
@@ -274,7 +277,8 @@ export default function App() {
   // ---- art lifecycle -----------------------------------------------------------------------
 
   // Without browser storage there is no history to fall back on, so ask before throwing edits away.
-  const confirmDiscard = () => art.available === true || !edited || window.confirm('Discard your manual edits?');
+  const confirmDiscard = async () =>
+    art.available === true || !edited || confirm({ title: 'Discard your edits?', action: 'Discard', destructive: true });
 
   const replaceImage = (img: LoadedImage | null) => {
     gen.cancel(); // a result for the previous image must not land on the new art
@@ -303,7 +307,7 @@ export default function App() {
     try {
       const parsed = await parseSchem(new Uint8Array(await file.arrayBuffer()));
       const r = schemToGrid(parsed, BLOCKS, { maxSide: MAX_SIDE, maxWallHeight: MAX_WALL_HEIGHT });
-      if (!confirmDiscard()) return;
+      if (!(await confirmDiscard())) return;
       await art.flush();
       setImageError(null);
       replaceImage(null);
@@ -312,7 +316,7 @@ export default function App() {
       setName(sanitizeName(parsed.name || file.name));
       art.begin(null);
       const unknown = [...r.unknown.values()].reduce((a, b) => a + b, 0);
-      setNotice(
+      notify(
         `Opened ${r.grid.width} × ${r.grid.height} ${r.orientation}` +
           (r.orientation === 'wall' ? ` facing ${r.facing}` : '') +
           (unknown ? `. ${plural(unknown, 'block')} of ${plural(r.unknown.size, 'unsupported type')} became air.` : '.'),
@@ -338,7 +342,7 @@ export default function App() {
       return;
     }
     setMode('pixel');
-    if (!confirmDiscard()) return;
+    if (!(await confirmDiscard())) return;
     try {
       const img = await loadImageFile(file);
       await art.flush();
@@ -359,7 +363,7 @@ export default function App() {
   onFileRef.current = onFile;
 
   const startBlank = async () => {
-    if (!confirmDiscard()) return;
+    if (!(await confirmDiscard())) return;
     await art.flush();
     replaceImage(null);
     showGrid0(createGrid(settings.width, settings.height));
@@ -373,7 +377,7 @@ export default function App() {
     try {
       const rec = await art.open(id);
       if (!rec) {
-        setNotice('That art is no longer in the history.');
+        notify('That art is no longer in the history.');
         return;
       }
       const { grid: g, missing } = decodeGrid(rec.data.grid, blockIndexById);
@@ -395,10 +399,10 @@ export default function App() {
       setName(rec.meta.name);
       art.adopt(rec.meta, { name: rec.meta.name, settings: s, edited: rec.data.edited }, g);
       const missingCount = [...missing.values()].reduce((a, b) => a + b, 0);
-      if (missingCount) setNotice(`${plural(missingCount, 'block')} that this Minecraft version doesn’t have became air.`);
-      else if (imageLost) setNotice('The original image couldn’t be loaded. The blocks are kept.');
+      if (missingCount) notify(`${plural(missingCount, 'block')} that this Minecraft version doesn’t have became air.`);
+      else if (imageLost) notify('The original image couldn’t be loaded. The blocks are kept.');
     } catch (e) {
-      setNotice(`Couldn’t open that art: ${e instanceof Error ? e.message : String(e)}`);
+      notify(`Couldn’t open that art: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -504,7 +508,7 @@ export default function App() {
   const keyRef = useRef<(e: KeyboardEvent) => void>(() => {});
   keyRef.current = (e: KeyboardEvent) => {
     // Ignore shortcuts only while typing; a focused checkbox, slider or button must not swallow Ctrl+Z.
-    const typing = 'input:not([type=checkbox]):not([type=range]):not([type=radio]), textarea, select, [contenteditable]';
+    const typing = 'input:not([type=checkbox]):not([type=range]):not([type=radio]), textarea, select, [contenteditable], [role=dialog]';
     if ((e.target as HTMLElement)?.closest?.(typing)) return;
     if (modeRef.current === 'model') return; // the editor's shortcuts don't apply to the 3D view
     const k = e.key.toLowerCase();
@@ -529,246 +533,223 @@ export default function App() {
     return () => window.removeEventListener('keydown', h);
   }, []);
 
-  // ---- status ------------------------------------------------------------------------------
+  // ---- view --------------------------------------------------------------------------------
 
-  let status: ReactNode = <span className="muted">Hover the canvas to inspect blocks</span>;
+  let status: ReactNode = <span className="text-muted-foreground">Hover the canvas to inspect blocks</span>;
   if (grid && hover) {
     const v = grid.cells[hover.y * grid.width + hover.x];
     const pos = layout(grid.width, grid.height, orientation, settings.facing).blockPos(hover.x, hover.y);
     status = (
       <>
-        <span className="num">
+        <span className="tabular-nums text-muted-foreground">
           x {pos.x} · y {pos.y} · z {pos.z}
         </span>
-        <span className="status-block">{v === AIR ? 'Air' : BLOCKS[v]?.name}</span>
+        <span className="truncate font-medium">{v === AIR ? 'Air' : BLOCKS[v]?.name}</span>
       </>
     );
   }
+  const readout = 'flex items-center gap-1.5 font-medium tabular-nums text-brand [&_svg]:size-3.5';
 
-  return (
-    <div className="app">
-      <header className="topbar">
-        <div className="brand">
-          <Logo />
-          <span>Make the Schem</span>
-        </div>
-        <div className="segmented small mode-switch" role="group" aria-label="Mode">
-          <button type="button" className={mode === 'pixel' ? 'is-active' : ''} onClick={() => setMode('pixel')} aria-pressed={mode === 'pixel'}>
-            <Icon name="image" size={15} /> Pixel art
-          </button>
-          <button type="button" className={mode === 'model' ? 'is-active' : ''} onClick={() => setMode('model')} aria-pressed={mode === 'model'}>
-            <Icon name="cube" size={15} /> 3D model
-          </button>
-        </div>
-        <div className="muted small topbar-info">
-          Minecraft Java {blockData.minecraftVersion} · data version {blockData.dataVersion} · {BLOCKS.length} blocks
-        </div>
-      </header>
+  const modeSwitch = <ModeSwitch mode={mode} setMode={setMode} />;
+  const openImage = () => fileInput.current?.click();
 
-      {modelUsed.current && (
-        <Suspense fallback={mode === 'model' ? <div className="mode-loading muted">Loading the 3D model mode…</div> : null}>
-          <ModelWorkspace active={mode === 'model'} request={modelRequest} atlas={atlas} />
-        </Suspense>
-      )}
-      {mode === 'pixel' && (
+  const pixel = (
+    <AppLayout
+      modeSwitch={modeSwitch}
+      actions={
+        <ExportDialog
+          target={{
+            kind: 'art',
+            grid,
+            orientation,
+            facing: settings.facing,
+            setFacing: (facing) => update({ facing }),
+            atlas: { atlas, tileSize: blockData.tileSize, atlasColumns: blockData.atlasColumns },
+          }}
+          blockCount={blockCount}
+          name={name}
+          setName={setName}
+        />
+      }
+      left={
         <>
-          <aside className="sidebar left">
-            <Section title="Image">
-              <ImagePanel image={image} onFile={(f) => void onFile(f)} onBlank={() => void startBlank()} error={imageError} />
-            </Section>
-            <Section title="Size & style">
-              <SettingsPanel
-                settings={settings}
-                update={update}
-                setOrientation={setOrientation}
-                setWidth={setWidth}
-                setHeight={setHeight}
-                setLongest={setLongest}
-                bgInfo={settings.bgOn ? bgInfo : null}
-                hasImage={!!image}
-              />
-            </Section>
-            {image && (
-              <Section title="Matching">
-                <MatchingPanel settings={settings} update={update} />
-              </Section>
-            )}
-            <Section title="Export">
-              <ExportPanel
-                target={{
-                  kind: 'art',
-                  grid,
-                  orientation,
-                  facing: settings.facing,
-                  setFacing: (facing) => update({ facing }),
-                  atlas: { atlas, tileSize: blockData.tileSize, atlasColumns: blockData.atlasColumns },
-                }}
-                blockCount={blockCount}
-                name={name}
-                setName={setName}
-              />
-            </Section>
-          </aside>
-
-          <main className="workspace">
-            <Toolbar
-              tool={tool}
-              brushSize={brushSize}
-              setBrushSize={setBrushSize}
-              rectFilled={rectFilled}
-              setRectFilled={setRectFilled}
-              currentBlock={currentBlock}
-              recent={recent}
-              onSelectBlock={selectBlock}
-              orientation={orientation}
-              canUndo={history.canUndo || selection.floating}
-              canRedo={history.canRedo}
-              onUndo={undo}
-              onRedo={redo}
-              selection={selection}
-              onCopy={() => editorRef.current?.copy()}
-              onCut={() => editorRef.current?.cut()}
-              onPaste={() => editorRef.current?.paste()}
-              onDelete={() => editorRef.current?.deleteSelection()}
-              hasOverlay={!!image}
-              overlayOn={overlayOn}
-              setOverlayOn={setOverlayOn}
-              overlayOpacity={overlayOpacity}
-              setOverlayOpacity={setOverlayOpacity}
-              viewMode={viewMode}
-              setViewMode={setViewMode}
-              showGrid={showGrid}
-              setShowGrid={setShowGrid}
-              showRulers={showRulers}
-              setShowRulers={setShowRulers}
-              onFit={() => setFitSignal((n) => n + 1)}
-              disabled={!grid}
+          <Section title="Source">
+            <ImagePanel image={image} onOpen={openImage} onBlank={() => void startBlank()} error={imageError} />
+            {image && <SourceOptions settings={settings} update={update} bgInfo={settings.bgOn ? bgInfo : null} />}
+          </Section>
+          <Section title="Size">
+            <SizePanel
+              settings={settings}
+              update={update}
+              setOrientation={setOrientation}
+              setWidth={setWidth}
+              setHeight={setHeight}
+              setLongest={setLongest}
             />
-            <div className="work-row">
-              <ToolRail tool={tool} setTool={setTool} selection={selection} onTransform={transform} disabled={!grid} />
-              <div className="stage">
-                {(stale || gen.error || notice) && (
-                  <div className="stage-banners">
-                    {notice && !stale && <div className="banner info">{notice}</div>}
-                    {stale && (
-                      <div className="banner">
-                        <span>Settings changed since your manual edits.</span>
-                        <button type="button" className="btn small primary" onClick={() => runRef.current()}>
-                          Regenerate
-                        </button>
-                        <span className="muted small">discards edits</span>
-                      </div>
-                    )}
-                    {gen.error && <div className="banner">Generation failed: {gen.error}</div>}
-                  </div>
-                )}
-                <Editor
-                  grid={grid}
-                  version={version}
-                  blocks={BLOCKS}
-                  orientation={orientation}
-                  atlas={atlas}
-                  tileSize={blockData.tileSize}
-                  atlasColumns={blockData.atlasColumns}
-                  viewMode={viewMode}
-                  showGrid={showGrid}
-                  showRulers={showRulers}
-                  tool={tool}
-                  brushSize={brushSize}
-                  rectFilled={rectFilled}
-                  currentBlock={currentBlock}
-                  history={history}
-                  fitSignal={fitSignal}
-                  overlay={overlayOn ? overlayImg : null}
-                  overlayOpacity={overlayOpacity}
-                  handleRef={editorRef}
-                  onEdit={onEdit}
-                  onPick={onPick}
-                  onHover={setHover}
-                  onZoom={setZoom}
-                  onMeasure={setMeasurement}
-                  onSelection={setSelection}
-                  onToolChange={setTool}
-                />
-                {!grid && !image && (
-                  <div className="empty">
-                    <Icon name="image" size={40} />
-                    <p>
-                      <strong>Drop an image here</strong> or choose one on the left.
-                    </p>
-                    <p className="muted small">
-                      It’s matched to Minecraft blocks right in your browser. Nothing is uploaded. You can also open a .schem to edit
-                      it{art.available ? ', and everything you make is kept in the History tab' : ''}.
-                    </p>
-                  </div>
-                )}
-                {(gen.busy || (image && !grid)) && <div className="busy">Generating…</div>}
-              </div>
-            </div>
-            <footer className="statusbar">
-              <div className="status-left">
+          </Section>
+          {image && (
+            <Section title="Matching">
+              <MatchingPanel settings={settings} update={update} />
+            </Section>
+          )}
+        </>
+      }
+      main={
+        <>
+          <Toolbar
+            tool={tool}
+            brushSize={brushSize}
+            setBrushSize={setBrushSize}
+            rectFilled={rectFilled}
+            setRectFilled={setRectFilled}
+            currentBlock={currentBlock}
+            recent={recent}
+            onSelectBlock={selectBlock}
+            orientation={orientation}
+            canUndo={history.canUndo || selection.floating}
+            canRedo={history.canRedo}
+            onUndo={undo}
+            onRedo={redo}
+            selection={selection}
+            onCopy={() => editorRef.current?.copy()}
+            onCut={() => editorRef.current?.cut()}
+            onPaste={() => editorRef.current?.paste()}
+            onDelete={() => editorRef.current?.deleteSelection()}
+            hasOverlay={!!image}
+            overlayOn={overlayOn}
+            setOverlayOn={setOverlayOn}
+            overlayOpacity={overlayOpacity}
+            setOverlayOpacity={setOverlayOpacity}
+            viewMode={viewMode}
+            setViewMode={setViewMode}
+            showGrid={showGrid}
+            setShowGrid={setShowGrid}
+            showRulers={showRulers}
+            setShowRulers={setShowRulers}
+            onFit={() => setFitSignal((n) => n + 1)}
+            disabled={!grid}
+          />
+          <div className="flex min-h-0 flex-1">
+            <ToolRail tool={tool} setTool={setTool} selection={selection} onTransform={transform} disabled={!grid} />
+            <Stage>
+              {stale && (
+                <StageBanner>
+                  <span>Settings changed since your edits</span>
+                  <Button size="sm" className="rounded-full" onClick={() => runRef.current()}>
+                    Regenerate
+                  </Button>
+                </StageBanner>
+              )}
+              <Editor
+                grid={grid}
+                version={version}
+                blocks={BLOCKS}
+                orientation={orientation}
+                atlas={atlas}
+                tileSize={blockData.tileSize}
+                atlasColumns={blockData.atlasColumns}
+                viewMode={viewMode}
+                showGrid={showGrid}
+                showRulers={showRulers}
+                tool={tool}
+                brushSize={brushSize}
+                rectFilled={rectFilled}
+                currentBlock={currentBlock}
+                history={history}
+                fitSignal={fitSignal}
+                overlay={overlayOn ? overlayImg : null}
+                overlayOpacity={overlayOpacity}
+                handleRef={editorRef}
+                onEdit={onEdit}
+                onPick={onPick}
+                onHover={setHover}
+                onZoom={setZoom}
+                onMeasure={setMeasurement}
+                onSelection={setSelection}
+                onToolChange={setTool}
+              />
+              {!grid && !image && (
+                <EmptyState icon={ImageIcon} title="Drop an image">
+                  <Button onClick={openImage}>
+                    <ImageUp /> Open image
+                  </Button>
+                  <Button variant="outline" onClick={() => void startBlank()}>
+                    <Grid2x2 /> Blank canvas
+                  </Button>
+                </EmptyState>
+              )}
+              {(gen.busy || (image && !grid)) && <BusyPill>Generating…</BusyPill>}
+            </Stage>
+          </div>
+          <StatusBar
+            left={
+              <>
                 {status}
                 {selection.rect && (
-                  <span className="status-measure" title={selection.floating ? 'Click or Enter places it, Esc cancels' : 'Esc clears the selection'}>
-                    <Icon name="select" size={14} /> {selection.rect.w} × {selection.rect.h}
+                  <span className={readout}>
+                    <SquareDashed /> {selection.rect.w} × {selection.rect.h}
                     {selection.floating ? ' · moving' : ''}
                   </span>
                 )}
                 {measurement && (
-                  <span className="status-measure" title="Esc clears the measurement">
-                    <Icon name="measure" size={14} /> {measureSummary(measurement, orientation)}
+                  <span className={readout}>
+                    <RulerDimensionLine /> {measureSummary(measurement, orientation)}
                   </span>
                 )}
-              </div>
-              <div className="status-right muted num">
-                {grid && `${grid.width} × ${grid.height}`}
-                {grid && ` · ${Math.round(zoom * 100) / 100}px/block`}
-              </div>
-            </footer>
-          </main>
-
-          <aside className="sidebar right">
-            <div className="tabs" role="tablist">
-              <button type="button" role="tab" aria-selected={tab === 'blocks'} className={tab === 'blocks' ? 'is-active' : ''} onClick={() => setTab('blocks')}>
-                Blocks <span className="badge">{enabled.size}</span>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === 'materials'}
-                className={tab === 'materials' ? 'is-active' : ''}
-                onClick={() => setTab('materials')}
-              >
-                Materials <span className="badge">{counts.size}</span>
-              </button>
-              {art.available && (
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={tab === 'history'}
-                  className={tab === 'history' ? 'is-active' : ''}
-                  onClick={() => setTab('history')}
-                >
-                  History <span className="badge">{art.list.length}</span>
-                </button>
-              )}
-            </div>
-            <div className="tab-body">
-              {tab === 'blocks' && <BlockPalettePanel enabled={enabled} setEnabled={setEnabled} orientation={orientation} />}
-              {tab === 'materials' && <MaterialsList counts={counts} orientation={orientation} />}
-              {tab === 'history' && art.available && (
-                <HistoryPanel list={art.list} currentId={art.currentId} onOpen={(id) => void openArt(id)} onDelete={(id) => void deleteArt(id)} />
-              )}
-            </div>
-          </aside>
+              </>
+            }
+            right={grid && `${grid.width} × ${grid.height} · ${Math.round(zoom * 100) / 100}px/block`}
+          />
         </>
-      )}
+      }
+      right={
+        <SideTabs
+          tab={tab}
+          setTab={setTab}
+          blocks={<BlockPalettePanel enabled={enabled} setEnabled={setEnabled} orientation={orientation} />}
+          materials={<MaterialsList counts={counts} orientation={orientation} />}
+          history={
+            art.available ? (
+              <HistoryPanel list={art.list} currentId={art.currentId} onOpen={(id) => void openArt(id)} onDelete={(id) => void deleteArt(id)} />
+            ) : null
+          }
+        />
+      }
+    />
+  );
 
+  return (
+    <TooltipProvider delayDuration={300}>
+      <input
+        ref={fileInput}
+        type="file"
+        accept={ACCEPT_ATTR}
+        hidden
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void onFile(f);
+          e.target.value = '';
+        }}
+      />
+      {modelUsed.current && (
+        <Suspense
+          fallback={
+            mode === 'model' ? (
+              <AppLayout modeSwitch={modeSwitch} left={null} main={<div className="grid flex-1 place-items-center text-muted-foreground">Loading…</div>} right={null} />
+            ) : null
+          }
+        >
+          <ModelWorkspace active={mode === 'model'} request={modelRequest} atlas={atlas} modeSwitch={modeSwitch} />
+        </Suspense>
+      )}
+      {mode === 'pixel' && pixel}
       {dragOver && (
-        <div className="drop-overlay">
-          <div>Drop an image, a .schem or a 3D model (.glb, .gltf, .stl) to open it</div>
+        <div className="pointer-events-none fixed inset-0 z-50 grid place-items-center bg-background/60 backdrop-blur-sm">
+          <div className="rounded-xl border-2 border-dashed border-foreground/30 bg-popover px-7 py-5 text-base font-medium shadow-lg">Drop to open</div>
         </div>
       )}
-    </div>
+      <Toaster />
+      <ConfirmDialog />
+    </TooltipProvider>
   );
 }

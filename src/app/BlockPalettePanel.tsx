@@ -1,8 +1,14 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useMemo, useState } from 'react';
+import { ChevronRight, Search, X } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { IconButton } from '@/components/icon-button';
+import { Note } from '@/components/note';
+import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { BLOCKS, blockData, defaultEnabledIds } from '../data';
 import type { Orientation } from '../core/types';
 import { BlockSwatch } from './BlockSwatch';
-import { Icon } from './Icon';
 
 interface Props {
   enabled: ReadonlySet<string>;
@@ -16,14 +22,6 @@ const PRESETS: { label: string; ids: () => string[] }[] = [
   { label: 'All safe', ids: () => BLOCKS.filter((b) => !b.gravity).map((b) => b.id) },
   { label: 'None', ids: () => [] },
 ];
-
-function TriCheckbox({ checked, indeterminate, onChange, label }: { checked: boolean; indeterminate: boolean; onChange: () => void; label: string }) {
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    if (ref.current) ref.current.indeterminate = indeterminate;
-  }, [indeterminate]);
-  return <input ref={ref} type="checkbox" checked={checked} onChange={onChange} aria-label={label} />;
-}
 
 /** Choose which blocks the generator may use. */
 export const BlockPalettePanel = memo(function BlockPalettePanel({ enabled, setEnabled, orientation }: Props) {
@@ -46,99 +44,87 @@ export const BlockPalettePanel = memo(function BlockPalettePanel({ enabled, setE
     for (const id of ids) (on ? next.add(id) : next.delete(id));
     setEnabled(next);
   };
+  const setOpenCategory = (category: string, isOpen: boolean) => {
+    const next = new Set(open);
+    if (isOpen) next.add(category);
+    else next.delete(category);
+    setOpen(next);
+  };
 
   const gravityOn = BLOCKS.some((b) => b.gravity && enabled.has(b.id));
 
   return (
-    <div className="palette">
-      <div className="palette-head">
-        <p className="muted small">
-          Generating from <strong>{enabled.size}</strong> of {BLOCKS.length} blocks
-        </p>
-        <label className="search">
-          <Icon name="search" size={16} />
-          <input placeholder="Search blocks…" value={query} onChange={(e) => setQuery(e.target.value)} />
-          {query && (
-            <button type="button" className="icon-btn tiny" onClick={() => setQuery('')} aria-label="Clear search">
-              <Icon name="close" size={14} />
-            </button>
-          )}
+    <div>
+      <div className="grid gap-3 p-4">
+        <label className="flex h-8 items-center gap-2 rounded-lg border border-input px-2.5 text-muted-foreground focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/50 dark:bg-input/30">
+          <Search className="size-4 shrink-0" />
+          <input
+            className="min-w-0 flex-1 bg-transparent text-foreground outline-none placeholder:text-muted-foreground"
+            placeholder="Search blocks"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          {query && <IconButton icon={X} label="Clear search" size="icon-xs" onClick={() => setQuery('')} />}
         </label>
-        <div className="chips">
+        <div className="flex flex-wrap gap-1.5">
           {PRESETS.map((p) => (
-            <button key={p.label} type="button" className="chip" onClick={() => setEnabled(new Set(p.ids()))}>
+            <Button key={p.label} variant="outline" size="xs" onClick={() => setEnabled(new Set(p.ids()))}>
               {p.label}
-            </button>
+            </Button>
           ))}
         </div>
-        {gravityOn && (
-          <p className="note warn">
-            <Icon name="warn" size={16} />
-            Sand, gravel and concrete powder fall when a neighbouring block updates. Fine for floors on solid ground, risky for walls.
-          </p>
-        )}
-        {enabled.size === 0 && <p className="note warn">Pick at least one block to generate from.</p>}
+        {gravityOn && <Note>Sand, gravel and concrete powder fall when a neighbouring block updates. Fine for floors, risky for walls.</Note>}
+        {enabled.size === 0 && <Note>Pick at least one block.</Note>}
       </div>
 
-      <div className="categories">
+      <div className="border-t">
         {groups.map(({ category, all, shown }) => {
           if (shown.length === 0) return null;
           const on = all.filter((b) => enabled.has(b.id)).length;
           const expanded = !!q || open.has(category);
           return (
-            <section key={category} className="category">
-              <div className="category-row">
-                <TriCheckbox
-                  checked={on === all.length}
-                  indeterminate={on > 0 && on < all.length}
-                  onChange={() => toggleIds(all.map((b) => b.id), on !== all.length)}
-                  label={`Use all ${category}`}
+            <Collapsible key={category} open={expanded} onOpenChange={(o) => setOpenCategory(category, o)} className="border-b">
+              <div className="flex items-center gap-1 pl-4 pr-3">
+                <Checkbox
+                  checked={on === all.length ? true : on > 0 ? 'indeterminate' : false}
+                  onCheckedChange={() => toggleIds(all.map((b) => b.id), on !== all.length)}
+                  aria-label={`Use all ${category}`}
                 />
-                <button
-                  type="button"
-                  className="category-toggle"
-                  onClick={() => {
-                    const next = new Set(open);
-                    if (next.has(category)) next.delete(category);
-                    else next.add(category);
-                    setOpen(next);
-                  }}
-                  aria-expanded={expanded}
-                >
-                  <span className={`chev ${expanded ? 'is-open' : ''}`}>
-                    <Icon name="chevron" size={14} />
-                  </span>
-                  <span className="category-name">{category}</span>
-                  <span className="category-preview" aria-hidden="true">
+                <CollapsibleTrigger className="group flex h-10 min-w-0 flex-1 items-center gap-2 px-2 text-left">
+                  <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
+                  <span className="shrink-0 font-medium">{category}</span>
+                  <span className="ml-auto flex min-w-0 justify-end gap-0.5 overflow-hidden" aria-hidden="true">
                     {all.slice(0, 6).map((b) => (
                       <BlockSwatch key={b.id} block={b} orientation={orientation} size={14} />
                     ))}
                   </span>
-                  <span className="muted small num">
+                  <span className="w-11 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
                     {on}/{all.length}
                   </span>
-                </button>
+                </CollapsibleTrigger>
               </div>
-              {expanded && (
-                <div className="block-grid">
-                  {shown.map((b) => {
-                    const isOn = enabled.has(b.id);
-                    return (
-                      <button
-                        key={b.id}
-                        type="button"
-                        className={`block-toggle ${isOn ? 'is-on' : ''}`}
-                        onClick={() => toggleIds([b.id], !isOn)}
-                        aria-pressed={isOn}
-                        title={`${b.name}${b.gravity ? ' (falls)' : ''}`}
-                      >
-                        <BlockSwatch block={b} orientation={orientation} size={28} />
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </section>
+              <CollapsibleContent className="grid grid-cols-[repeat(auto-fill,36px)] gap-1 px-4 pb-3">
+                {shown.map((b) => {
+                  const isOn = enabled.has(b.id);
+                  return (
+                    <button
+                      key={b.id}
+                      type="button"
+                      className={cn(
+                        'grid size-9 place-items-center rounded-md border bg-muted/50 hover:border-foreground/50',
+                        isOn ? 'border-foreground/70 ring-1 ring-foreground/70 ring-inset' : '[&>span]:opacity-30 [&>span]:grayscale-[0.7]',
+                      )}
+                      onClick={() => toggleIds([b.id], !isOn)}
+                      aria-pressed={isOn}
+                      aria-label={b.name}
+                      title={`${b.name}${b.gravity ? ' (falls)' : ''}`}
+                    >
+                      <BlockSwatch block={b} orientation={orientation} size={28} />
+                    </button>
+                  );
+                })}
+              </CollapsibleContent>
+            </Collapsible>
           );
         })}
       </div>

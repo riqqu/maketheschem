@@ -1,7 +1,9 @@
 import { memo, useEffect, useState, type ReactElement } from 'react';
+import { Trash2 } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { confirm } from '@/components/confirm';
+import { IconButton } from '@/components/icon-button';
 import type { ArtMeta } from '../lib/db';
-import { Icon } from './Icon';
-import { HISTORY_LIMIT } from './useArtHistory';
 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
 
@@ -25,7 +27,11 @@ function Thumb({ blob, smooth }: { blob: Blob | null; smooth: boolean }) {
     setUrl(u);
     return () => URL.revokeObjectURL(u);
   }, [blob]);
-  return <span className={smooth ? 'history-thumb smooth' : 'history-thumb'}>{url && <img src={url} alt="" />}</span>;
+  return (
+    <span className="checkerboard grid size-12 shrink-0 place-items-center overflow-hidden rounded-md border">
+      {url && <img src={url} alt="" className="max-h-full max-w-full" style={{ imageRendering: smooth ? 'auto' : 'pixelated' }} />}
+    </span>
+  );
 }
 
 export interface HistoryItem {
@@ -42,21 +48,15 @@ interface Props<T extends HistoryItem> {
   onDelete: (id: string) => void;
   /** Size line under the name. Keep it a stable function so the list isn't re-rendered needlessly. */
   describe?: (item: T) => string;
-  /** Shown while the list is empty. */
-  emptyText?: string;
-  limit?: number;
   /** Thumbnails are renders rather than one pixel per block, so scale them smoothly. */
   smoothThumbs?: boolean;
 }
 
 export const describeArt = (m: ArtMeta) => `${m.width} × ${m.height} ${m.orientation} · ${m.blockCount.toLocaleString()} blocks`;
-const ART_EMPTY =
-  'Your art is saved here automatically as you work, one entry per image or canvas. Nothing is uploaded: it stays in this browser.';
 
 /** Every art (or model) made in this browser, newest first. Each one keeps saving while it is open. */
 export const HistoryPanel = memo(function HistoryPanel<T extends HistoryItem>({
-  list, currentId, onOpen, onDelete, describe = describeArt as unknown as (item: T) => string, emptyText = ART_EMPTY, limit = HISTORY_LIMIT,
-  smoothThumbs = false,
+  list, currentId, onOpen, onDelete, describe = describeArt as unknown as (item: T) => string, smoothThumbs = false,
 }: Props<T>) {
   // Re-render once a minute so "5 minutes ago" stays right.
   const [now, setNow] = useState(() => Date.now());
@@ -66,46 +66,41 @@ export const HistoryPanel = memo(function HistoryPanel<T extends HistoryItem>({
   }, []);
   useEffect(() => setNow(Date.now()), [list]);
 
-  if (list.length === 0) {
-    return <p className="muted pad">{emptyText}</p>;
-  }
+  if (list.length === 0) return <p className="p-4 text-muted-foreground">Your builds appear here.</p>;
+
+  const remove = async (m: T) => {
+    if (await confirm({ title: `Delete “${m.name}”?`, description: 'This can’t be undone.', action: 'Delete', destructive: true })) onDelete(m.id);
+  };
 
   return (
-    <div className="history">
-      <p className="history-head muted small">
-        Saved automatically in this browser · {list.length}/{limit}
-      </p>
-      <ul className="history-list">
-        {list.map((m) => (
-          <li key={m.id} className={m.id === currentId ? 'is-current' : ''}>
+    <ul className="grid gap-0.5 p-2">
+      {list.map((m) => {
+        const current = m.id === currentId;
+        return (
+          <li key={m.id} className={cn('group flex items-center rounded-lg pr-1 hover:bg-muted/60', current && 'bg-muted')}>
             <button
               type="button"
-              className="history-open"
+              className="flex min-w-0 flex-1 items-center gap-3 p-2 text-left"
               onClick={() => onOpen(m.id)}
-              aria-current={m.id === currentId ? 'true' : undefined}
-              title={m.id === currentId ? 'Open now' : `Open ${m.name}`}
+              aria-current={current ? 'true' : undefined}
             >
               <Thumb blob={m.thumb} smooth={smoothThumbs} />
-              <span className="history-meta">
-                <span className="history-name">{m.name}</span>
-                <span className="muted small num">{describe(m)}</span>
-                <span className="muted small">{m.id === currentId ? 'Open now' : ago(m.updatedAt, now)}</span>
+              <span className="grid min-w-0 leading-snug">
+                <span className="truncate font-medium">{m.name}</span>
+                <span className="truncate text-xs tabular-nums text-muted-foreground">{describe(m)}</span>
+                <span className="text-xs text-muted-foreground">{current ? 'Open' : ago(m.updatedAt, now)}</span>
               </span>
             </button>
-            <button
-              type="button"
-              className="icon-btn tiny history-delete"
-              onClick={() => {
-                if (window.confirm(`Delete “${m.name}” from the history? This can’t be undone.`)) onDelete(m.id);
-              }}
-              aria-label={`Delete ${m.name}`}
-              title="Delete"
-            >
-              <Icon name="trash" size={14} />
-            </button>
+            <IconButton
+              icon={Trash2}
+              label="Delete"
+              size="icon-sm"
+              className="text-muted-foreground opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
+              onClick={() => void remove(m)}
+            />
           </li>
-        ))}
-      </ul>
-    </div>
+        );
+      })}
+    </ul>
   );
 }) as <T extends HistoryItem>(props: Props<T>) => ReactElement;
