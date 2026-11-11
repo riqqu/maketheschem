@@ -245,6 +245,12 @@ export function coversCommandBlock(p: Placement, size: { width: number; height: 
 /** Single-quoted SNBT string. */
 const snbtString = (s: string) => `'${s.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
 const cart = (command: string) => `{id:command_block_minecart,Command:${snbtString(command)}}`;
+/**
+ * A falling block's BlockState for a block without properties. Minecraft 26.3 reads the block from `id` (or a plain
+ * string) and ignores the older `Name`, turning the falling block into sand; older versions read only `Name`. Each
+ * ignores the other's key, so writing both works on either side of the change.
+ */
+const fallingState = (block: string) => `BlockState:{Name:${block},id:${block}}`;
 
 /**
  * Packs commands into as few single commands as fit a command block (the "one command" technique from the
@@ -254,8 +260,8 @@ const cart = (command: string) => `{id:command_block_minecart,Command:${snbtStri
  * part can be pasted into it) and remove the minecarts.
  */
 export function commandBlockParts(commands: string[], limit = COMMAND_BLOCK_LIMIT): string[] {
-  const head = 'summon falling_block ~ ~1 ~ {BlockState:{Name:redstone_block},Passengers:[{id:armor_stand,Health:0,Passengers:[' +
-    '{id:falling_block,BlockState:{Name:activator_rail},Passengers:[';
+  const head = `summon falling_block ~ ~1 ~ {${fallingState('redstone_block')},Passengers:[{id:armor_stand,Health:0,Passengers:[` +
+    `{id:falling_block,${fallingState('activator_rail')},Passengers:[`;
   const tail = [
     cart('setblock ~ ~1 ~ command_block{auto:1,Command:"fill ~ ~ ~ ~ ~-2 ~ air"}'),
     cart('kill @e[type=command_block_minecart,distance=..1]'),

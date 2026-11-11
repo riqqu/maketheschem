@@ -6,20 +6,24 @@ import type { VoxelHit } from '../core/voxelRay';
 import { countCells } from '../core/volume';
 import { orientMatrix } from '../core/mesh';
 import { blockData, blockIndexById, BLOCKS } from '../data';
+import { deleteModels, listModels, loadModel, saveModel, type ModelMeta, type ModelSource } from '../lib/db';
 import { isModelFile, loadModelFile, MODEL_EXTENSIONS, type LoadedModel } from '../lib/model';
+import { squareThumbnail } from '../lib/render';
 import { saveJSON } from '../lib/storage';
 import { BlockPalettePanel } from './BlockPalettePanel';
 import { BlockPicker } from './BlockPicker';
 import { BlockSwatch } from './BlockSwatch';
 import { ExportPanel, sanitizeName } from './ExportPanel';
+import { HistoryPanel } from './HistoryPanel';
 import { Icon } from './Icon';
 import { MaterialsList } from './MaterialsList';
 import { ModelPreview, type ModelPreviewHandle, type PreviewView } from './ModelPreview';
 import {
-  BLOCK_TILES, LS_MODEL_SETTINGS, loadModelSettings, MODEL_SIZE_PRESETS, modelPalettes, type ModelSettings,
+  BLOCK_TILES, LS_MODEL_SETTINGS, loadModelSettings, MODEL_SIZE_PRESETS, modelPalettes, sanitizeModelSettings, type ModelSettings,
 } from './modelSettings';
 import { MatchingPanel } from './SettingsPanel';
 import type { ModelBuildResult } from '../worker/model.worker';
+import { useAutosaveHistory, type HistoryStore } from './useAutosaveHistory';
 import { useModelBuilder } from './useModelBuilder';
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -33,6 +37,16 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 const FRONT = ['south', 'west', 'north', 'east'];
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+
+/** Most models kept in the history; the oldest are dropped beyond this. */
+const MODEL_HISTORY_LIMIT = 40;
+type SavedModel = Awaited<ReturnType<typeof loadModel>>;
+const MODEL_STORE: HistoryStore<ModelMeta, SavedModel> = { list: listModels, load: loadModel, remove: deleteModels };
+const describeModel = (m: ModelMeta) => `${m.width} × ${m.height} × ${m.length} · ${plural(m.blockCount, 'block')}`;
+const MODEL_EMPTY =
+  'Your models are saved here automatically with their settings, one entry per model file. Nothing is uploaded: they stay in this browser.';
+/** An entry is the model file plus its settings; the blocks are rebuilt from them when it's opened. */
+const modelSignature = (name: string, s: ModelSettings) => JSON.stringify([name, s]);
 
 interface Props {
   /** Rendered only while active; state (the loaded model, the last build) is kept while hidden. */
@@ -54,42 +68,153 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
   const update = useCallback((patch: Partial<ModelSettings>) => setSettings((s) => ({ ...s, ...patch })), []);
   useEffect(() => saveJSON(LS_MODEL_SETTINGS, settings), [settings]);
   const [result, setResult] = useState<ModelBuildResult | null>(null);
+  /** buildKey the result was made with: it is stale while this differs from the current one. */
+  const [resultKey, setResultKey] = useState<string | null>(null);
   const [hover, setHover] = useState<VoxelHit | null>(null);
   const [view, setView] = useState<PreviewView>('blocks');
-  const [tab, setTab] = useState<'blocks' | 'materials'>('blocks');
+  const [tab, setTab] = useState<'blocks' | 'materials' | 'history'>('blocks');
   const [name, setName] = useState('model');
   const [pickerAt, setPickerAt] = useState<{ top: number; left: number } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 5000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  // ---- history (autosave) -------------------------------------------------------------------
+
+  /** What is shown now, read at save time. Filled in below once everything is derived. */
+  const live = useRef({
+    name, settings, result, resultKey, buildKey: null as string | null, blockCount: 0, canSnapshot: false, list: [] as ModelMeta[],
+  });
+  const hist = useAutosaveHistory<ModelMeta, SavedModel, Omit<ModelSource, 'id'>>({
+    store: MODEL_STORE,
+    limit: MODEL_HISTORY_LIMIT,
+    onError: setNotice,
+    // Saved once the blocks match the current settings, so the thumbnail and block count are right.
+    signature: () => {
+      const s = live.current;
+      return s.result && s.resultKey === s.buildKey ? modelSignature(s.name, s.settings) : null;
+    },
+    save: async (entry) => {
+      const s = live.current;
+      const v = s.result!.volume;
+      const shot = s.canSnapshot ? await previewRef.current?.snapshot().catch(() => null) : null;
+      const thumb = (shot && (await squareThumbnail(shot).catch(() => null))) || (s.list.find((m) => m.id === entry.id)?.thumb ?? null);
+      const meta: ModelMeta = {
+        id: entry.id,
+        name: s.name,
+        createdAt: entry.createdAt,
+        updatedAt: Date.now(),
+        width: v.width,
+        height: v.height,
+        length: v.length,
+        blockCount: s.blockCount,
+        thumb,
+      };
+      await saveModel(meta, { id: entry.id, settings: s.settings }, entry.pending ? { id: entry.id, ...entry.pending } : null);
+      return meta;
+    },
+  });
 
   // ---- loading ------------------------------------------------------------------------------
 
-  const open = async (file: File) => {
+  const loadSeq = useRef(0);
+  /** Opens a model file: a new one (new history entry, default orientation) or a saved one with its settings. */
+  const load = async (file: File, saved?: { meta: ModelMeta; settings: ModelSettings }) => {
     if (!isModelFile(file)) {
       setLoadError(`“${file.name}” is not a .glb, .gltf or .stl file.`);
       return;
     }
+    const seq = ++loadSeq.current; // only the newest of overlapping loads lands
     setLoading(true);
     setLoadError(null);
     try {
       const m = await loadModelFile(file);
+      if (seq !== loadSeq.current) return;
+      if (!saved) await hist.flush(); // the previous model's last changes go to its own entry
+      if (seq !== loadSeq.current) return;
       builder.setSource(m.mesh);
       setResult(null);
+      setResultKey(null);
       setHover(null);
       setModel(m);
-      setName(sanitizeName(file.name));
-      // A model without colours (most STL files) starts with one block; coloured ones match their colours.
-      const coloured = m.format !== 'stl' || !!m.mesh.colors;
-      update({ up: m.defaultUp, turns: 0, colorMode: coloured ? 'match' : 'single' });
+      if (saved) {
+        setName(saved.meta.name);
+        setSettings(saved.settings);
+        hist.adopt(saved.meta, modelSignature(saved.meta.name, saved.settings));
+      } else {
+        setName(sanitizeName(file.name));
+        // A model without colours (most STL files) starts with one block; coloured ones match their colours.
+        const coloured = m.format !== 'stl' || !!m.mesh.colors;
+        update({ up: m.defaultUp, turns: 0, colorMode: coloured ? 'match' : 'single' });
+        hist.begin({ blob: file, name: file.name, type: file.type });
+      }
     } catch (e) {
-      setLoadError(`Couldn’t open “${file.name}”: ${e instanceof Error ? e.message : String(e)}`);
+      if (seq === loadSeq.current) setLoadError(`Couldn’t open “${file.name}”: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
-      setLoading(false);
+      if (seq === loadSeq.current) setLoading(false);
     }
   };
+  const open = (file: File) => load(file);
   const openRef = useRef(open);
   openRef.current = open;
   useEffect(() => {
     if (request) void openRef.current(request.file);
   }, [request]);
+
+  const openSaved = async (id: string) => {
+    if (id === hist.currentId) return;
+    try {
+      const rec = await hist.open(id);
+      if (!rec) {
+        setNotice('That model is no longer in the history.');
+        return;
+      }
+      const file = new File([rec.source.blob], rec.source.name, { type: rec.source.type });
+      await load(file, { meta: rec.meta, settings: sanitizeModelSettings(rec.data.settings, settings) });
+    } catch (e) {
+      setNotice(`Couldn’t open that model: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+  const openSavedRef = useRef(openSaved);
+  openSavedRef.current = openSaved;
+
+  const deleteSaved = async (id: string) => {
+    const wasCurrent = id === hist.currentId;
+    await hist.remove(id);
+    if (wasCurrent) {
+      loadSeq.current++;
+      builder.setSource(null);
+      setModel(null);
+      setResult(null);
+      setResultKey(null);
+      setHover(null);
+      setName('model');
+    }
+  };
+
+  // Reopen the latest model once the history is ready, unless a model is already being opened.
+  const restored = useRef(false);
+  useEffect(() => {
+    if (hist.available === null || restored.current) return;
+    restored.current = true;
+    if (hist.available && hist.list.length && !request && loadSeq.current === 0) void openSavedRef.current(hist.list[0].id);
+  }, [hist.available]);
+
+  // Save when the tab is hidden or closed.
+  useEffect(() => {
+    const hidden = () => document.visibilityState === 'hidden' && void hist.flush();
+    const unload = () => void hist.flush();
+    document.addEventListener('visibilitychange', hidden);
+    window.addEventListener('beforeunload', unload);
+    return () => {
+      document.removeEventListener('visibilitychange', hidden);
+      window.removeEventListener('beforeunload', unload);
+    };
+  }, [hist.flush]);
 
   // ---- building -----------------------------------------------------------------------------
 
@@ -105,6 +230,7 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
 
   useEffect(() => {
     if (!model || !buildKey || noBlocks) return;
+    const key = buildKey;
     const t = setTimeout(() => {
       builder.build(
         {
@@ -120,7 +246,10 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
           tiles: BLOCK_TILES,
           atlasColumns: blockData.atlasColumns,
         },
-        setResult,
+        (r) => {
+          setResult(r);
+          setResultKey(key);
+        },
       );
     }, 150);
     return () => clearTimeout(t);
@@ -128,6 +257,10 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
 
   const counts = useMemo(() => (result ? countCells(result.volume.cells) : new Map<number, number>()), [result]);
   const blockCount = useMemo(() => [...counts.values()].reduce((a, b) => a + b, 0), [counts]);
+
+  // The thumbnail is a snapshot of the blocks view, so only take it while that is on screen.
+  live.current = { name, settings, result, resultKey, buildKey, blockCount, canSnapshot: active && view === 'blocks', list: hist.list };
+  useEffect(() => hist.schedule(), [result, resultKey, name, settings, hist.schedule]);
 
   // Where the original model sits in voxel space, for the "Source model" view, and the size it will get.
   const placement = useMemo(() => {
@@ -353,8 +486,9 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
         </div>
         <div className="work-row">
           <div className="stage">
-            {(builder.error || noBlocks) && (
+            {(builder.error || noBlocks || notice) && (
               <div className="stage-banners">
+                {notice && <div className="banner info">{notice}</div>}
                 {noBlocks && <div className="banner">No blocks are enabled. Choose some in the Blocks tab.</div>}
                 {builder.error && <div className="banner">Building failed: {builder.error}</div>}
               </div>
@@ -379,7 +513,7 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
                 </p>
                 <p className="muted small">
                   GLB / glTF (with colours and textures) or STL. It’s turned into blocks right in your browser and exported as a
-                  3D .schem or .litematic.
+                  3D .schem or .litematic{hist.available ? ', and every model you open is kept in the History tab' : ''}.
                 </p>
               </div>
             )}
@@ -404,10 +538,27 @@ export function ModelWorkspace({ active, request, atlas }: Props) {
           <button type="button" role="tab" aria-selected={tab === 'materials'} className={tab === 'materials' ? 'is-active' : ''} onClick={() => setTab('materials')}>
             Materials <span className="badge">{counts.size}</span>
           </button>
+          {hist.available && (
+            <button type="button" role="tab" aria-selected={tab === 'history'} className={tab === 'history' ? 'is-active' : ''} onClick={() => setTab('history')}>
+              History <span className="badge">{hist.list.length}</span>
+            </button>
+          )}
         </div>
         <div className="tab-body">
           {tab === 'blocks' && <EnabledBlocks settings={settings} update={update} />}
           {tab === 'materials' && <MaterialsList counts={counts} orientation="wall" />}
+          {tab === 'history' && hist.available && (
+            <HistoryPanel
+              list={hist.list}
+              currentId={hist.currentId}
+              onOpen={(id) => void openSaved(id)}
+              onDelete={(id) => void deleteSaved(id)}
+              describe={describeModel}
+              emptyText={MODEL_EMPTY}
+              limit={MODEL_HISTORY_LIMIT}
+              smoothThumbs
+            />
+          )}
         </div>
       </aside>
     </>

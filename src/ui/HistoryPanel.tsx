@@ -1,4 +1,4 @@
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useState, type ReactElement } from 'react';
 import type { ArtMeta } from '../lib/db';
 import { Icon } from './Icon';
 import { HISTORY_LIMIT } from './useArtHistory';
@@ -17,7 +17,7 @@ function ago(ms: number, now: number): string {
   return new Date(ms).toLocaleDateString();
 }
 
-function Thumb({ blob }: { blob: Blob | null }) {
+function Thumb({ blob, smooth }: { blob: Blob | null; smooth: boolean }) {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
     if (!blob) return setUrl(null);
@@ -25,18 +25,39 @@ function Thumb({ blob }: { blob: Blob | null }) {
     setUrl(u);
     return () => URL.revokeObjectURL(u);
   }, [blob]);
-  return <span className="history-thumb">{url && <img src={url} alt="" />}</span>;
+  return <span className={smooth ? 'history-thumb smooth' : 'history-thumb'}>{url && <img src={url} alt="" />}</span>;
 }
 
-interface Props {
-  list: ArtMeta[];
+export interface HistoryItem {
+  id: string;
+  name: string;
+  updatedAt: number;
+  thumb: Blob | null;
+}
+
+interface Props<T extends HistoryItem> {
+  list: T[];
   currentId: string | null;
   onOpen: (id: string) => void;
   onDelete: (id: string) => void;
+  /** Size line under the name. Keep it a stable function so the list isn't re-rendered needlessly. */
+  describe?: (item: T) => string;
+  /** Shown while the list is empty. */
+  emptyText?: string;
+  limit?: number;
+  /** Thumbnails are renders rather than one pixel per block, so scale them smoothly. */
+  smoothThumbs?: boolean;
 }
 
-/** Every art made in this browser, newest first. Each one keeps saving while it is open. */
-export const HistoryPanel = memo(function HistoryPanel({ list, currentId, onOpen, onDelete }: Props) {
+export const describeArt = (m: ArtMeta) => `${m.width} × ${m.height} ${m.orientation} · ${m.blockCount.toLocaleString()} blocks`;
+const ART_EMPTY =
+  'Your art is saved here automatically as you work, one entry per image or canvas. Nothing is uploaded: it stays in this browser.';
+
+/** Every art (or model) made in this browser, newest first. Each one keeps saving while it is open. */
+export const HistoryPanel = memo(function HistoryPanel<T extends HistoryItem>({
+  list, currentId, onOpen, onDelete, describe = describeArt as unknown as (item: T) => string, emptyText = ART_EMPTY, limit = HISTORY_LIMIT,
+  smoothThumbs = false,
+}: Props<T>) {
   // Re-render once a minute so "5 minutes ago" stays right.
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -46,18 +67,13 @@ export const HistoryPanel = memo(function HistoryPanel({ list, currentId, onOpen
   useEffect(() => setNow(Date.now()), [list]);
 
   if (list.length === 0) {
-    return (
-      <p className="muted pad">
-        Your art is saved here automatically as you work, one entry per image or canvas. Nothing is uploaded: it stays in
-        this browser.
-      </p>
-    );
+    return <p className="muted pad">{emptyText}</p>;
   }
 
   return (
     <div className="history">
       <p className="history-head muted small">
-        Saved automatically in this browser · {list.length}/{HISTORY_LIMIT}
+        Saved automatically in this browser · {list.length}/{limit}
       </p>
       <ul className="history-list">
         {list.map((m) => (
@@ -69,12 +85,10 @@ export const HistoryPanel = memo(function HistoryPanel({ list, currentId, onOpen
               aria-current={m.id === currentId ? 'true' : undefined}
               title={m.id === currentId ? 'Open now' : `Open ${m.name}`}
             >
-              <Thumb blob={m.thumb} />
+              <Thumb blob={m.thumb} smooth={smoothThumbs} />
               <span className="history-meta">
                 <span className="history-name">{m.name}</span>
-                <span className="muted small num">
-                  {m.width} × {m.height} {m.orientation} · {m.blockCount.toLocaleString()} blocks
-                </span>
+                <span className="muted small num">{describe(m)}</span>
                 <span className="muted small">{m.id === currentId ? 'Open now' : ago(m.updatedAt, now)}</span>
               </span>
             </button>
@@ -94,4 +108,4 @@ export const HistoryPanel = memo(function HistoryPanel({ list, currentId, onOpen
       </ul>
     </div>
   );
-});
+}) as <T extends HistoryItem>(props: Props<T>) => ReactElement;

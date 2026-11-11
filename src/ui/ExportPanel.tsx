@@ -13,6 +13,7 @@ import type { Volume } from '../core/volume';
 import { zip } from '../core/zip';
 import { loadJSON, saveJSON } from '../lib/storage';
 import { canvasToBlob, downloadBlob, MIN_TEXTURE_SCALE, pngScale, renderArt, type AtlasInfo } from '../lib/render';
+import { loadSaves, saveDatapack, type Saves } from '../lib/saves';
 import { Icon } from './Icon';
 
 /** WorldEdit command-friendly file name. */
@@ -42,6 +43,8 @@ const DEFAULT_COMMANDS: CommandSettings = {
 };
 /** More command block pastes than this and the data pack is suggested instead. */
 const MANY_PARTS = 10;
+/** Folder name of the world data packs are saved into. */
+const LS_WORLD = 'mts.world';
 
 function loadCommandSettings(): CommandSettings {
   const r = loadJSON<Partial<CommandSettings> | null>(LS_COMMANDS, null) ?? {};
@@ -126,6 +129,17 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
   /** Command block commands made last, and which of them were copied. */
   const [parts, setParts] = useState<string[] | null>(null);
   const [copied, setCopied] = useState<ReadonlySet<number>>(new Set());
+  /** Your Minecraft worlds, from the dev server; null without it (a static build): download only. */
+  const [saves, setSaves] = useState<Saves | null>(null);
+  const [worldName, setWorldNameState] = useState(() => loadJSON<string>(LS_WORLD, ''));
+  const setWorldName = (n: string) => {
+    setWorldNameState(n);
+    saveJSON(LS_WORLD, n);
+  };
+  const world = saves?.worlds.find((w) => w.name === worldName) ?? saves?.worlds[0] ?? null;
+  /** World the data pack was last saved into; cleared when the build changes. */
+  const [savedTo, setSavedTo] = useState<string | null>(null);
+  const [fnCopied, setFnCopied] = useState(false);
   const fileName = sanitizeName(name);
   const wallFacing: Facing = art && orientation === 'wall' ? facing : 'south';
   const dims = volume
@@ -137,7 +151,16 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
   useEffect(() => {
     setCmdInfo(null);
     setParts(null);
+    setSavedTo(null);
   }, [grid, volume, blockCount, orientation, wallFacing, cmd]);
+
+  useEffect(() => {
+    let live = true;
+    loadSaves().then((s) => live && setSaves(s));
+    return () => {
+      live = false;
+    };
+  }, []);
 
   const run = async (task: () => Promise<void>) => {
     setBusy(true);
@@ -169,23 +192,51 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
     return buildCommands(input, { placement: forBlock ? commandBlockPlacement(placement) : placement, clear: cmd.clear });
   };
 
+  const datapackZip = async () => {
+    const set = makeCommands(false);
+    if (!set) return null;
+    const ticks = Math.ceil(set.commands.length / PART_SIZE);
+    setCmdInfo(commandSummary(set) + (ticks > 1 ? ` · built over ${ticks} ticks` : ''));
+    const enc = new TextEncoder();
+    const files = datapackFiles(set, { name: fileName, packFormat: blockData.dataPackFormat });
+    return zip(files.map((f) => ({ path: f.path, data: enc.encode(f.text) })));
+  };
+
   const download = () =>
     run(async () => {
       const input = exportInput();
       if (!input) return;
       if (format === 'commands') {
-        const set = makeCommands(false);
-        if (!set) return;
-        const ticks = Math.ceil(set.commands.length / PART_SIZE);
-        setCmdInfo(commandSummary(set) + (ticks > 1 ? ` · built over ${ticks} ticks` : ''));
-        const enc = new TextEncoder();
-        const files = datapackFiles(set, { name: fileName, packFormat: blockData.dataPackFormat });
-        const bytes = await zip(files.map((f) => ({ path: f.path, data: enc.encode(f.text) })));
-        downloadBlob(new Blob([bytes as BlobPart], { type: 'application/zip' }), `${fileName}_datapack.zip`);
+        const bytes = await datapackZip();
+        if (bytes) downloadBlob(new Blob([bytes as BlobPart], { type: 'application/zip' }), `${fileName}_datapack.zip`);
         return;
       }
       const bytes = format === 'litematic' ? await buildLitematic(input) : await buildSchem(input);
       downloadBlob(new Blob([bytes as BlobPart], { type: 'application/octet-stream' }), `${fileName}.${format}`);
+    });
+
+  /** Lists the worlds again, e.g. after creating one in Minecraft. */
+  const refreshWorlds = () =>
+    run(async () => {
+      const s = await loadSaves();
+      if (!s) throw new Error('The app’s dev server is not running. Start it with npm run dev.');
+      setSaves(s);
+    });
+
+  const saveToWorld = () =>
+    run(async () => {
+      if (!world) return;
+      const bytes = await datapackZip();
+      if (!bytes) return;
+      await saveDatapack(world.name, `${fileName}_datapack.zip`, bytes);
+      setSavedTo(world.name);
+      setFnCopied(false);
+    });
+
+  const copyFunction = () =>
+    run(async () => {
+      await navigator.clipboard.writeText(functionCommand(fileName));
+      setFnCopied(true);
     });
 
   const makeParts = () =>
@@ -260,6 +311,28 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
               </button>
             </div>
           </div>
+          {!byBlock && saves && (
+            <div className="field">
+              <span className="field-label">Save into world</span>
+              <div className="world-row">
+                {saves.worlds.length ? (
+                  <select value={world?.name ?? ''} onChange={(e) => setWorldName(e.target.value)} aria-label="Minecraft world">
+                    {saves.worlds.map((w) => (
+                      <option key={w.name} value={w.name}>
+                        {w.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="small muted">No worlds yet: create one in Minecraft, then refresh.</span>
+                )}
+                <button type="button" className="btn small" onClick={refreshWorlds} disabled={busy} title="List the worlds again" aria-label="Refresh worlds">
+                  <Icon name="rotCW" size={15} />
+                </button>
+              </div>
+              <p className="small muted path">From {saves.folder}, last played first.</p>
+            </div>
+          )}
           <div className="field">
             <span className="field-label">Position</span>
             <div className="segmented small" role="group" aria-label="Position">
@@ -322,18 +395,44 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
         <button type="button" className="btn primary wide" onClick={makeParts} disabled={!ready || blockCount === 0 || busy || blocksCommandBlock}>
           <Icon name="copy" /> {busy ? 'Building…' : 'Make command block commands'}
         </button>
+      ) : format === 'commands' && world ? (
+        <>
+          <button type="button" className="btn primary wide" onClick={saveToWorld} disabled={!ready || blockCount === 0 || busy}>
+            <Icon name="folder" /> {busy ? 'Building…' : 'Save to world'}
+          </button>
+          <button type="button" className="link-btn small" onClick={download} disabled={!ready || blockCount === 0 || busy}>
+            <Icon name="download" size={14} /> Download the .zip instead
+          </button>
+        </>
       ) : (
         <button type="button" className="btn primary wide" onClick={download} disabled={!ready || blockCount === 0 || busy}>
           <Icon name="download" /> {busy ? 'Building…' : format === 'commands' ? 'Download data pack' : `Download .${format}`}
         </button>
       )}
       {format === 'commands' && cmdInfo && <p className="small muted num">{cmdInfo}</p>}
+      {format === 'commands' && !byBlock && savedTo && (
+        <div className="note info saved-note">
+          <span>
+            Saved to <strong>{savedTo}</strong>. In Minecraft run <code>/reload</code>, then <code>{functionCommand(fileName)}</code>
+            {cmd.relative ? ' where the build should go.' : '.'}
+          </span>
+          <button type="button" className="btn small" onClick={copyFunction} title={`Copy ${functionCommand(fileName)}`}>
+            <Icon name="copy" size={14} /> {fnCopied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      )}
       {format === 'commands' && byBlock && parts && (
         <>
           {parts.length > MANY_PARTS && (
-            <p className="note warn">
-              That’s {parts.length} pastes. A data pack builds it in one go if you can reach the world folder.
-            </p>
+            <div className="note warn">
+              <span>
+                That’s {parts.length} pastes. A data pack builds it in one go
+                {saves?.worlds.length ? ', saved straight into your world.' : ' if you can reach the world folder.'}{' '}
+                <button type="button" className="link-btn inline" onClick={() => setCmd({ runWith: 'datapack' })}>
+                  Use a data pack
+                </button>
+              </span>
+            </div>
           )}
           <ol className="cmd-parts">
             {parts.map((p, i) => (
@@ -389,6 +488,12 @@ export function ExportPanel({ target, blockCount, name, setName }: Props) {
           <>
             <ol>
               <li>
+                {saves && (
+                  <>
+                    Pick the world under <strong>Save into world</strong> and click <strong>Save to world</strong>. Or download the
+                    .zip:{' '}
+                  </>
+                )}
                 Open the world’s folder (Singleplayer → select the world → <strong>Edit</strong> → <strong>Open World Folder</strong>) and put
                 the .zip in its <code>datapacks</code> folder. For a new world: <strong>More</strong> → <strong>Data Packs</strong> and drop the
                 .zip there.

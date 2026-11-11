@@ -84,6 +84,11 @@ menu (`M`). Floors read with north at the top.
   (Singleplayer → select the world → Edit → Open World Folder), run `/reload`, then `/function mts:<name>`. Builds
   with more than 20,000 commands run in parts, one per tick (a function stops after 65,536 commands). For relative
   placement a marker entity remembers where you ran it. The pack targets the data pack format read from your jar.
+  With `npm run dev` (or `npm run preview`) there's no file handling at all: pick the world under **Save into world**
+  (your worlds, last played first) and **Save to world** writes `<name>_datapack.zip` into its `datapacks` folder. The
+  dev server does the writing, because browsers refuse folders inside AppData. It reads the launcher's default
+  saves folder (`%APPDATA%\.minecraft\saves`, `~/Library/Application Support/minecraft/saves` or
+  `~/.minecraft/saves`); for another launcher start it with `MTS_SAVES=<saves folder>`.
 - **Position**: relative (`~`) counts from the command block, or from where you stand for the data pack. The x/y/z
   fields move the build's bottom north-west corner (x east, y up, z south). **Coordinates** writes fixed world
   coordinates instead.

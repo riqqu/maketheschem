@@ -33,9 +33,35 @@ export interface ArtSource {
   type: string;
 }
 
+/** Light record for the 3D model history list. */
+export interface ModelMeta {
+  id: string;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  width: number;
+  height: number;
+  length: number;
+  blockCount: number;
+  thumb: Blob | null;
+}
+
+export interface ModelData {
+  id: string;
+  /** ModelSettings at save time (validated again on load). */
+  settings: unknown;
+}
+
+/** The model file, written once per entry. The blocks are rebuilt from it and the settings. */
+export type ModelSource = ArtSource;
+
 const DB_NAME = 'make-the-schem';
-const DB_VERSION = 1;
+// 2 added a store for picked folders, since removed again. Browsers that opened version 2 refuse a lower one.
+// 3 added the 3D model history.
+const DB_VERSION = 3;
 const META = 'meta', DATA = 'data', SOURCES = 'sources';
+const MODEL_META = 'modelMeta', MODEL_DATA = 'modelData', MODEL_SOURCES = 'modelSources';
+const STORES = [META, DATA, SOURCES, MODEL_META, MODEL_DATA, MODEL_SOURCES];
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
@@ -45,9 +71,13 @@ export function openDb(): Promise<IDBDatabase | null> {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
-        for (const name of [META, DATA, SOURCES]) if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'id' });
+        for (const name of STORES) if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'id' });
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        // Let a newer version of the app in another tab upgrade the database instead of being blocked.
+        req.result.onversionchange = () => req.result.close();
+        resolve(req.result);
+      };
       req.onerror = () => resolve(null);
       req.onblocked = () => resolve(null);
     } catch {
@@ -110,5 +140,44 @@ export async function deleteArts(ids: string[]): Promise<void> {
   const db = await need();
   const tx = db.transaction([META, DATA, SOURCES], 'readwrite');
   for (const id of ids) for (const s of [META, DATA, SOURCES]) tx.objectStore(s).delete(id);
+  await done(tx);
+}
+
+// ---- 3D models ------------------------------------------------------------------------------
+
+/** Newest first. */
+export async function listModels(): Promise<ModelMeta[]> {
+  const db = await openDb();
+  if (!db) return [];
+  const all = await result(db.transaction(MODEL_META).objectStore(MODEL_META).getAll() as IDBRequest<ModelMeta[]>);
+  return all.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function loadModel(id: string): Promise<{ meta: ModelMeta; data: ModelData; source: ModelSource } | null> {
+  const db = await need();
+  const tx = db.transaction([MODEL_META, MODEL_DATA, MODEL_SOURCES]);
+  const [meta, data, source] = await Promise.all([
+    result(tx.objectStore(MODEL_META).get(id) as IDBRequest<ModelMeta | undefined>),
+    result(tx.objectStore(MODEL_DATA).get(id) as IDBRequest<ModelData | undefined>),
+    result(tx.objectStore(MODEL_SOURCES).get(id) as IDBRequest<ModelSource | undefined>),
+  ]);
+  return meta && data && source ? { meta, data, source } : null;
+}
+
+/** Writes the entry; the model file only when given (it never changes after the entry is created). */
+export async function saveModel(meta: ModelMeta, data: ModelData, source: ModelSource | null): Promise<void> {
+  const db = await need();
+  const tx = db.transaction([MODEL_META, MODEL_DATA, MODEL_SOURCES], 'readwrite');
+  tx.objectStore(MODEL_META).put(meta);
+  tx.objectStore(MODEL_DATA).put(data);
+  if (source) tx.objectStore(MODEL_SOURCES).put(source);
+  await done(tx);
+}
+
+export async function deleteModels(ids: string[]): Promise<void> {
+  if (!ids.length) return;
+  const db = await need();
+  const tx = db.transaction([MODEL_META, MODEL_DATA, MODEL_SOURCES], 'readwrite');
+  for (const id of ids) for (const s of [MODEL_META, MODEL_DATA, MODEL_SOURCES]) tx.objectStore(s).delete(id);
   await done(tx);
 }

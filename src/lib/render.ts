@@ -83,6 +83,22 @@ export function thumbnail(grid: Grid, blocks: readonly BlockInfo[], orientation:
   return canvasToBlob(c);
 }
 
+/** The centre square of an image, scaled down to `max` px: a list thumbnail of a 3D view (the model is fitted centred). */
+export async function squareThumbnail(image: Blob, max = 96): Promise<Blob | null> {
+  const bmp = await createImageBitmap(image);
+  try {
+    const side = Math.min(bmp.width, bmp.height);
+    if (!side) return null;
+    const out = Math.min(max, side);
+    const { c, ctx } = canvas2d(out, out);
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, out, out);
+    return canvasToBlob(c);
+  } finally {
+    bmp.close();
+  }
+}
+
 /** Starts a browser download of `data`. */
 export function downloadBlob(data: Blob, fileName: string) {
   const url = URL.createObjectURL(data);

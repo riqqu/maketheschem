@@ -176,7 +176,9 @@ describe('commandBlockParts', () => {
     const all: string[] = [];
     for (const p of parts) {
       expect(p.length).toBeLessThanOrEqual(COMMAND_BLOCK_LIMIT);
-      expect(p.startsWith('summon falling_block ~ ~1 ~ {BlockState:{Name:redstone_block}')).toBe(true);
+      expect(p.startsWith('summon falling_block ~ ~1 ~ {BlockState:{Name:redstone_block,id:redstone_block}')).toBe(true);
+      // 26.3 reads `id`, older versions `Name`: without the one the game reads, the falling block becomes sand.
+      expect(p).toContain('{id:falling_block,BlockState:{Name:activator_rail,id:activator_rail}');
       expect(balanced(p)).toBe(true);
       const carts = cartsOf(p);
       // Every part ends by clearing the rail (keeping the command block) and removing the minecarts.
