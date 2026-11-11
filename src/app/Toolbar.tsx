@@ -112,19 +112,22 @@ interface Props {
   setShowRulers: (v: boolean) => void;
   onFit: () => void;
   disabled: boolean;
+  /** Build mode: the canvas is not edited, so the tools stay off. */
+  building: boolean;
 }
 
 /** The row above the canvas: tool options on the left, view options on the right. */
 export function Toolbar(p: Props) {
   const sel = p.selection;
+  const noTools = p.disabled || p.building;
   return (
     <ToolbarRow>
       <Group>
-        <BlockPicker value={p.currentBlock} onSelect={p.onSelectBlock} orientation={p.orientation} recent={p.recent} disabled={p.disabled} />
+        <BlockPicker value={p.currentBlock} onSelect={p.onSelectBlock} orientation={p.orientation} recent={p.recent} disabled={noTools} />
       </Group>
-      <ToolOptionsBar tool={p.tool} options={p.toolOptions} set={p.setToolOption} disabled={p.disabled} />
+      <ToolOptionsBar tool={p.tool} options={p.toolOptions} set={p.setToolOption} disabled={noTools} />
 
-      {p.tool === 'select' && (
+      {p.tool === 'select' && !p.building && (
         <Group>
           <IconButton icon={Copy} label="Copy" shortcut="Ctrl+C" onClick={p.onCopy} disabled={!sel.rect} />
           <IconButton icon={Scissors} label="Cut" shortcut="Ctrl+X" onClick={p.onCut} disabled={!sel.rect} />
@@ -134,8 +137,8 @@ export function Toolbar(p: Props) {
       )}
 
       <Group>
-        <IconButton icon={Undo2} label="Undo" shortcut="Ctrl+Z" onClick={p.onUndo} disabled={!p.canUndo} />
-        <IconButton icon={Redo2} label="Redo" shortcut="Ctrl+Y" onClick={p.onRedo} disabled={!p.canRedo} />
+        <IconButton icon={Undo2} label="Undo" shortcut="Ctrl+Z" onClick={p.onUndo} disabled={!p.canUndo || p.building} />
+        <IconButton icon={Redo2} label="Redo" shortcut="Ctrl+Y" onClick={p.onRedo} disabled={!p.canRedo || p.building} />
       </Group>
 
       <div className="ml-auto flex shrink-0 items-center gap-1">

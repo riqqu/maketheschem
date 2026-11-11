@@ -33,6 +33,13 @@ export function clipRect(r: Rect, width: number, height: number): Rect | null {
   return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
 }
 
+/** The area two rectangles share, or null. */
+export function intersectRect(a: Rect, b: Rect): Rect | null {
+  const x0 = Math.max(a.x, b.x), y0 = Math.max(a.y, b.y);
+  const x1 = Math.min(a.x + a.w, b.x + b.w), y1 = Math.min(a.y + a.h, b.y + b.h);
+  return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
+}
+
 export const inRect = (r: Rect, c: Cell) => c.x >= r.x && c.y >= r.y && c.x < r.x + r.w && c.y < r.y + r.h;
 
 /** Shift on the line tool: snap to the nearest horizontal, vertical or 45° direction. */

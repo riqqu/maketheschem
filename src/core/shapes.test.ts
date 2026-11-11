@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createGrid, History } from './grid';
 import {
-  clipRect, copyRegion, fillRect, lineCells, paintCells, rectBetween, rectCells, rectCorners, snapLine, snapSquare,
+  clipRect, copyRegion, fillRect, intersectRect, lineCells, paintCells, rectBetween, rectCells, rectCorners, snapLine, snapSquare,
   stampClip, transformClip, transformRegion,
 } from './shapes';
 import { AIR } from './types';
@@ -14,6 +14,17 @@ describe('rectBetween / clipRect', () => {
     expect(rectBetween({ x: 4, y: 1 }, { x: 1, y: 3 })).toEqual({ x: 1, y: 1, w: 4, h: 3 });
     expect(clipRect({ x: -2, y: 1, w: 4, h: 10 }, 5, 4)).toEqual({ x: 0, y: 1, w: 2, h: 3 });
     expect(clipRect({ x: 6, y: 0, w: 2, h: 2 }, 5, 4)).toBeNull();
+  });
+});
+
+describe('intersectRect', () => {
+  it('gives the shared area', () => {
+    expect(intersectRect({ x: 0, y: 0, w: 10, h: 10 }, { x: 4, y: 6, w: 10, h: 2 })).toEqual({ x: 4, y: 6, w: 6, h: 2 });
+    expect(intersectRect({ x: 2, y: 2, w: 3, h: 3 }, { x: 0, y: 0, w: 20, h: 20 })).toEqual({ x: 2, y: 2, w: 3, h: 3 });
+  });
+  it('is null when they only touch or are apart', () => {
+    expect(intersectRect({ x: 0, y: 0, w: 4, h: 4 }, { x: 4, y: 0, w: 4, h: 4 })).toBeNull();
+    expect(intersectRect({ x: 0, y: 0, w: 4, h: 4 }, { x: 9, y: 9, w: 1, h: 1 })).toBeNull();
   });
 });
 

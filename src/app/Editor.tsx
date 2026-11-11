@@ -1,15 +1,18 @@
 import { useEffect, useImperativeHandle, useRef, type Ref } from 'react';
 import { brushRows, type BrushShape } from '../core/brush';
+import { CHUNK, DONE, isDone, type Built, type Steps } from '../core/build';
 import { floodFill, paintLine, replaceAll, type Grid, type History } from '../core/grid';
 import { lockAxis, rowLineDistance, type Cell, type Measurement } from '../core/measure';
 import {
-  clipRect, copyRegion, fillRect, inRect, lineCells, paintCells, rectBetween, rectCells, rectCorners, snapLine, snapSquare,
+  clipRect, copyRegion, fillRect, inRect, intersectRect, lineCells, paintCells, rectBetween, rectCells, rectCorners, snapLine, snapSquare,
   stampClip, transformClip, transformRegion, type Clip, type ClipTransform, type Rect,
 } from '../core/shapes';
 import { similarBlocks } from '../core/similar';
 import { AIR, faceOf, type BlockInfo, type Orientation } from '../core/types';
 import { colorCanvas } from '../lib/render';
-import { dashedRect, drawMeasurement, drawRulers, label, outlineBrush, RULER_H, RULER_W, screen, type Theme, type View } from './editorDraw';
+import {
+  dashedRect, drawCheck, drawMeasurement, drawRulers, label, outlineBrush, outlineCells, RULER_H, RULER_W, screen, type Theme, type View,
+} from './editorDraw';
 import type { ToolOptions } from './toolOptions';
 
 export type Tool = 'brush' | 'eraser' | 'picker' | 'fill' | 'replace' | 'measure' | 'line' | 'rect' | 'select';
@@ -36,6 +39,17 @@ export interface EditorHandle {
   cancelFloating(): boolean;
 }
 
+/** Build mode: the canvas shows one step of the plan and ticks, and clicking picks a step instead of editing. */
+export interface BuildView {
+  steps: Steps;
+  /** Index of the current step. */
+  step: number;
+  built: Built | null;
+  /** Per step, see StepState in core/build.ts. */
+  states: Uint8Array;
+  onStep: (index: number) => void;
+}
+
 interface Props {
   grid: Grid | null;
   /** Bumped by the parent whenever the grid changed outside the editor (generate, undo, redo). */
@@ -56,6 +70,9 @@ interface Props {
   /** Source image drawn over the blocks for comparison, or null. */
   overlay: HTMLImageElement | null;
   overlayOpacity: number;
+  /** A block to show on its own: every other cell fades. */
+  highlight: number | null;
+  build: BuildView | null;
   handleRef: Ref<EditorHandle>;
   onEdit: () => void;
   onPick: (value: number) => void;
@@ -72,6 +89,11 @@ const MAX_SCALE = 64;
 const TEXTURE_MIN_SCALE = 6;
 /** Thick grid lines every this many blocks (matches the ruler numbering). */
 const MAJOR = 10;
+/** How far blocks outside the highlight or the current build step fade, and how strongly built blocks are tinted. */
+const DIM_ALPHA = 0.72;
+const DONE_ALPHA = 0.4;
+/** Smallest section on screen, in pixels, that still gets a tick when it is done. */
+const CHECK_MIN_PX = 28;
 
 interface Floating {
   clip: Clip;
@@ -125,6 +147,7 @@ export function Editor(props: Props) {
     rulerText: '#646c79',
     rulerLine: '#c7ccd5',
     accent: '#2f7d3c',
+    dim: '#f0f0f0',
   });
 
   // ---- drawing -----------------------------------------------------------------------------
@@ -171,7 +194,8 @@ export function Editor(props: Props) {
     /** One block at cell (x, y), as a texture or flat colour. */
     const drawBlock = (value: number, x: number, y: number, alpha = 1) => {
       if (value === AIR || value >= tiles.length) return;
-      const dx = sx(x), dy = sy(y), dw = sx(x + 1) - dx, dh = sy(y + 1) - dy;
+      // At least one pixel, so a lone highlighted block stays visible when zoomed far out.
+      const dx = sx(x), dy = sy(y), dw = Math.max(1, sx(x + 1) - dx), dh = Math.max(1, sy(y + 1) - dy);
       ctx.globalAlpha = alpha;
       if (useTextures && p.atlas) {
         const tile = tiles[value];
@@ -230,32 +254,90 @@ export function Editor(props: Props) {
       ctx.restore();
     }
 
-    // Grid lines: every block when zoomed in, and every 10 blocks (same origin as the rulers) for counting.
-    const rowDist = (r: number) => rowLineDistance(r, g.height, p.orientation);
-    if (p.showGrid) {
-      ctx.lineWidth = 1;
-      if (scale >= 16) {
-        ctx.strokeStyle = t.line;
-        ctx.beginPath();
-        for (let x = x0; x <= x1; x++) { ctx.moveTo(sx(x) + 0.5, sy(y0)); ctx.lineTo(sx(x) + 0.5, sy(y1)); }
-        for (let y = y0; y <= y1; y++) { ctx.moveTo(sx(x0), sy(y) + 0.5); ctx.lineTo(sx(x1), sy(y) + 0.5); }
-        ctx.stroke();
-      }
-      if (scale >= 1.5) {
-        ctx.strokeStyle = t.major;
-        ctx.beginPath();
-        for (let x = Math.ceil(x0 / MAJOR) * MAJOR; x <= x1; x += MAJOR) { ctx.moveTo(sx(x) + 0.5, sy(y0)); ctx.lineTo(sx(x) + 0.5, sy(y1)); }
-        for (let y = y0; y <= y1; y++) {
-          if (rowDist(y) % MAJOR === 0) { ctx.moveTo(sx(x0), sy(y) + 0.5); ctx.lineTo(sx(x1), sy(y) + 0.5); }
+    // A highlighted block or the current build step: everything else fades, finished blocks get a tint.
+    const hl = p.highlight;
+    const build = p.build;
+    if ((hl !== null || build) && visible.w > 0 && visible.h > 0) {
+      // The part that stays lit: the current step, or everything when only a block is highlighted.
+      const lit = build ? intersectRect(build.steps.rect(build.step), visible) : visible;
+      ctx.fillStyle = t.dim;
+      ctx.globalAlpha = DIM_ALPHA;
+      ctx.beginPath();
+      ctx.rect(sx(x0), sy(y0), sx(x1) - sx(x0), sy(y1) - sy(y0));
+      // Without a highlighted block the whole step keeps its colours: cut it out of the fade.
+      if (hl === null && lit) ctx.rect(sx(lit.x), sy(lit.y), sx(lit.x + lit.w) - sx(lit.x), sy(lit.y + lit.h) - sy(lit.y));
+      ctx.fill('evenodd');
+      ctx.globalAlpha = 1;
+      // With a highlighted block, only its cells inside the lit part come back.
+      if (hl !== null && lit) {
+        for (let y = lit.y; y < lit.y + lit.h; y++) {
+          for (let x = lit.x; x < lit.x + lit.w; x++) if (g.cells[y * g.width + x] === hl) drawBlock(hl, x, y);
         }
-        ctx.stroke();
       }
+    }
+    if (build) {
+      const done = build.built?.cells ?? null;
+      if (done) {
+        ctx.fillStyle = t.accent;
+        ctx.globalAlpha = DONE_ALPHA;
+        for (let y = y0; y < y1; y++) {
+          let start = -1;
+          for (let x = x0; x <= x1; x++) {
+            const on = x < x1 && isDone(g.cells, done, y * g.width + x);
+            if (on && start < 0) start = x;
+            else if (!on && start >= 0) {
+              ctx.fillRect(sx(start), sy(y), sx(x) - sx(start), sy(y + 1) - sy(y));
+              start = -1;
+            }
+          }
+        }
+        ctx.globalAlpha = 1;
+      }
+      if (build.steps.kind === 'sections' && scale * CHUNK >= CHECK_MIN_PX) {
+        for (let i = 0; i < build.steps.count; i++) {
+          if (build.states[i] !== DONE) continue;
+          const r = build.steps.rect(i);
+          if (r.x >= x1 || r.y >= y1 || r.x + r.w <= x0 || r.y + r.h <= y0) continue;
+          if (Math.min(r.w, r.h) * scale >= CHECK_MIN_PX) drawCheck(ctx, ox + (r.x + r.w / 2) * scale, oy + (r.y + r.h / 2) * scale, Math.min(28, Math.min(r.w, r.h) * scale * 0.5));
+        }
+      }
+    }
+
+    // Grid lines: every block when zoomed in, and every 10 blocks (same origin as the rulers) for counting.
+    // Building swaps the tens for the chunk lines every 16, which stay even when the grid is hidden.
+    const rowDist = (r: number) => rowLineDistance(r, g.height, p.orientation);
+    if (p.showGrid && scale >= 16) {
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = t.line;
+      ctx.beginPath();
+      for (let x = x0; x <= x1; x++) { ctx.moveTo(sx(x) + 0.5, sy(y0)); ctx.lineTo(sx(x) + 0.5, sy(y1)); }
+      for (let y = y0; y <= y1; y++) { ctx.moveTo(sx(x0), sy(y) + 0.5); ctx.lineTo(sx(x1), sy(y) + 0.5); }
+      ctx.stroke();
+    }
+    if ((p.showGrid || build) && scale >= 1.5) {
+      const major = build ? CHUNK : MAJOR;
+      ctx.lineWidth = build ? 2 : 1;
+      ctx.strokeStyle = build ? t.accent : t.major;
+      const nudge = build ? 0 : 0.5;
+      ctx.beginPath();
+      for (let x = Math.ceil(x0 / major) * major; x <= x1; x += major) { ctx.moveTo(sx(x) + nudge, sy(y0)); ctx.lineTo(sx(x) + nudge, sy(y1)); }
+      for (let y = y0; y <= y1; y++) {
+        if (rowDist(y) % major === 0) { ctx.moveTo(sx(x0), sy(y) + nudge); ctx.lineTo(sx(x1), sy(y) + nudge); }
+      }
+      ctx.stroke();
+      ctx.lineWidth = 1;
     }
 
     // Border.
     ctx.strokeStyle = t.major;
     ctx.lineWidth = 1;
     ctx.strokeRect(sx(0) - 0.5, sy(0) - 0.5, sx(g.width) - sx(0) + 1, sy(g.height) - sy(0) + 1);
+
+    // The current build step.
+    if (build) {
+      const r = build.steps.rect(build.step);
+      outlineCells(ctx, sx(r.x), sy(r.y), sx(r.x + r.w) - sx(r.x), sy(r.y + r.h) - sy(r.y));
+    }
 
     // Selection or floating area.
     const sel = f ? { x: f.x, y: f.y, w: f.clip.width, h: f.clip.height } : selection.current;
@@ -268,7 +350,7 @@ export function Editor(props: Props) {
 
     // Tool footprint under the cursor.
     const h = hover.current;
-    const footprint = p.tool !== 'select' && p.tool !== 'measure';
+    const footprint = p.tool !== 'select' && p.tool !== 'measure' && !p.build;
     if (h && footprint && !space.current && d?.kind !== 'pan' && d?.kind !== 'shape') {
       const pen = penOf(p);
       outlineBrush(ctx, v, h.x, h.y, brushRows(pen?.size ?? 1, pen?.shape));
@@ -504,6 +586,7 @@ export function Editor(props: Props) {
     if (d?.kind === 'pan') cursor = 'grabbing';
     else if (space.current) cursor = 'grab';
     else if (d?.kind === 'move') cursor = 'move';
+    else if (propsRef.current.build) cursor = hover.current ? 'pointer' : 'default';
     else if (propsRef.current.tool === 'select' && hover.current) {
       const f = floating.current;
       const r = f ? { x: f.x, y: f.y, w: f.clip.width, h: f.clip.height } : selection.current;
@@ -528,6 +611,7 @@ export function Editor(props: Props) {
         rulerText: get('--muted-foreground', '#737373'),
         rulerLine: get('--border', '#e5e5e5'),
         accent: get('--brand', '#2f7d3c'),
+        dim: get('--stage', '#f0f0f0'),
       };
       requestDraw();
     };
@@ -587,13 +671,37 @@ export function Editor(props: Props) {
 
   useEffect(() => {
     requestDraw();
-  }, [props.viewMode, props.showGrid, props.showRulers, props.atlas, props.tool, props.options, props.overlay, props.overlayOpacity]);
+  }, [
+    props.viewMode, props.showGrid, props.showRulers, props.atlas, props.tool, props.options, props.overlay, props.overlayOpacity, props.highlight,
+    props.build,
+  ]);
 
-  // Leaving the select tool places a floating selection.
+  // Leaving the select tool, or starting to build, places a floating selection; building also drops the selection.
+  const building = !!props.build;
   useEffect(() => {
-    if (props.tool !== 'select' && floating.current) commitFloating();
+    if ((props.tool !== 'select' || building) && floating.current) commitFloating();
+    if (building && selection.current) {
+      selection.current = null;
+      report();
+      requestDraw();
+    }
     updateCursor();
-  }, [props.tool]);
+  }, [props.tool, building]);
+
+  // Moving to a step that is out of view (next / previous, or done) brings it to the middle.
+  useEffect(() => {
+    const b = props.build;
+    const v = view.current;
+    if (!b || !v.cw || !v.ch) return;
+    const r = b.steps.rect(b.step);
+    const rw = props.showRulers ? RULER_W : 0, rh = props.showRulers ? RULER_H : 0;
+    const left = v.ox + r.x * v.scale, right = left + r.w * v.scale;
+    const top = v.oy + r.y * v.scale, bottom = top + r.h * v.scale;
+    if (right > 0 && left < v.cw - rw && bottom > rh && top < v.ch) return;
+    v.ox += (v.cw - rw) / 2 - (left + right) / 2;
+    v.oy += (rh + v.ch) / 2 - (top + bottom) / 2;
+    requestDraw();
+  }, [props.build?.steps, props.build?.step]);
 
   // Wheel zoom around the cursor (needs a non-passive listener to stop page scroll).
   useEffect(() => {
@@ -638,7 +746,9 @@ export function Editor(props: Props) {
         return;
       }
       if (!propsRef.current.grid) return;
+      const building = !!propsRef.current.build; // nothing is edited then, but the view still pans
       if (ctrl && !e.shiftKey && !e.altKey) {
+        if (building) return;
         if (k === 'c' && copy()) e.preventDefault();
         else if (k === 'x' && copy() && deleteSelection()) e.preventDefault();
         else if (k === 'v' && paste()) e.preventDefault();
@@ -648,7 +758,7 @@ export function Editor(props: Props) {
         }
         return;
       }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && deleteSelection()) {
+      if (!building && (e.key === 'Delete' || e.key === 'Backspace') && deleteSelection()) {
         e.preventDefault();
         return;
       }
@@ -714,6 +824,12 @@ export function Editor(props: Props) {
     const g = p.grid;
     if (!g || onRuler(e)) return;
     const c = cellAt(e);
+
+    // Building: a click picks the step under the cursor and nothing is edited.
+    if (p.build) {
+      if (e.button === 0 && inside(g, c)) p.build.onStep(p.build.steps.at(c.x, c.y));
+      return;
+    }
 
     // The select tool may grab a floating piece hanging over the edge.
     if (p.tool === 'select' && e.button === 0) {

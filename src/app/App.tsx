@@ -8,18 +8,23 @@ import { Button } from '@/components/ui/button';
 import { Toaster } from '@/components/ui/sonner';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import { ATLAS_URL, BLOCKS, blockData, blockIndexById } from '../data';
+import { avoidBlocks } from '../core/avoid';
+import {
+  activeBuilt, DONE, EMPTY, makeSteps, nextOpen, originCell, stepStates, tickRect, type Built, type StepKind,
+} from '../core/build';
 import { countBlocks, createGrid, History, resizeGrid, type Grid } from '../core/grid';
 import { layout } from '../core/layout';
 import { measureSummary, type Measurement } from '../core/measure';
 import { parseSchem, schemToGrid } from '../core/schemRead';
 import { decodeGrid } from '../core/serialize';
 import type { ClipTransform } from '../core/shapes';
-import { AIR, type Orientation } from '../core/types';
+import { AIR, faceOf, type Orientation } from '../core/types';
 import { ACCEPT_ATTR, ACCEPTED_TYPES, isModelFile, isSchemFile, loadImageFile, type LoadedImage } from '../lib/image';
 import { loadJSON, saveJSON } from '../lib/storage';
 import type { BackgroundInfo } from '../worker/generate.worker';
 import { BlockPalettePanel } from './BlockPalettePanel';
-import { Editor, type EditorHandle, type SelectionInfo, type Tool, type ViewMode } from './Editor';
+import { BuildPanel } from './BuildPanel';
+import { Editor, type BuildView, type EditorHandle, type SelectionInfo, type Tool, type ViewMode } from './Editor';
 import { ExportDialog, sanitizeName } from './ExportDialog';
 import { HistoryPanel } from './HistoryPanel';
 import { ImagePanel } from './ImagePanel';
@@ -64,6 +69,7 @@ const NO_SELECTION: SelectionInfo = { rect: null, floating: false, clipboard: fa
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 const notify = (message: string) => void toast(message);
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 /** Pixel art / 3D model: the same control in both workspaces' top bar. */
 function ModeSwitch({ mode, setMode }: { mode: Mode; setMode: (m: Mode) => void }) {
@@ -132,6 +138,13 @@ export default function App() {
   const [zoom, setZoom] = useState(1);
   const [fitSignal, setFitSignal] = useState(0);
   const [tab, setTab] = useState<SideTab>('blocks');
+  /** A block picked in the Materials or Build tab: everything else fades on the canvas. */
+  const [highlight, setHighlight] = useState<number | null>(null);
+  /** Blocks ticked off in Build mode, kept with the art. */
+  const [built, setBuilt] = useState<Built | null>(null);
+  const [stepKind, setStepKind] = useState<StepKind>('rows');
+  /** The chosen build step; null until one is picked, which means the first one still to do. */
+  const [stepPick, setStepPick] = useState<number | null>(null);
   const [name, setName] = useState('pixel_art');
   const [dragOver, setDragOver] = useState(false);
   const [mode, setModeState] = useState<Mode>(() => (loadJSON<string>(LS_MODE, 'pixel') === 'model' ? 'model' : 'pixel'));
@@ -153,14 +166,16 @@ export default function App() {
 
   const counts = useMemo(() => (grid ? countBlocks(grid) : new Map<number, number>()), [grid, version]);
   const blockCount = useMemo(() => [...counts.values()].reduce((a, b) => a + b, 0), [counts]);
+  /** The build progress that belongs to this grid (it is dropped when the art is resized). */
+  const progress = useMemo(() => activeBuilt(grid, built), [grid, built]);
 
   // ---- history (autosave) ------------------------------------------------------------------
 
   const art = useArtHistory(
-    () => ({ name: sanitizeName(name), settings, grid, edited, hasImage: !!image, blockCount }),
+    () => ({ name: sanitizeName(name), settings, grid, edited, hasImage: !!image, blockCount, built: progress }),
     notify,
   );
-  useEffect(() => art.schedule(), [grid, version, settings, name, edited, image, art.schedule]);
+  useEffect(() => art.schedule(), [grid, version, settings, name, edited, image, progress, art.schedule]);
 
   // ---- size --------------------------------------------------------------------------------
 
@@ -303,6 +318,9 @@ export default function App() {
     setLastGen(opts.lastGen ?? null);
     setBgInfo(null);
     setMeasurement(null);
+    setHighlight(null);
+    setBuilt(null);
+    setStepPick(null);
     setFitSignal((n) => n + 1);
   };
 
@@ -384,6 +402,14 @@ export default function App() {
         return;
       }
       const { grid: g, missing } = decodeGrid(rec.data.grid, blockIndexById);
+      let saved: Built | null = null;
+      if (rec.data.built) {
+        try {
+          saved = activeBuilt(g, decodeGrid(rec.data.built, blockIndexById).grid);
+        } catch {
+          // unreadable progress: start the build again, the art is fine
+        }
+      }
       const s = { ...sanitizeSettings(rec.data.settings, settings), width: g.width, height: g.height };
       let img: LoadedImage | null = null;
       let imageLost = false;
@@ -399,8 +425,9 @@ export default function App() {
       replaceImage(img);
       setSettings(s);
       showGrid0(g, { edited: rec.data.edited, lastGen: img ? generationKeys(img.key, s) : null });
+      setBuilt(saved);
       setName(rec.meta.name);
-      art.adopt(rec.meta, { name: rec.meta.name, settings: s, edited: rec.data.edited }, g);
+      art.adopt(rec.meta, { name: rec.meta.name, settings: s, edited: rec.data.edited }, g, saved);
       const missingCount = [...missing.values()].reduce((a, b) => a + b, 0);
       if (missingCount) notify(`${plural(missingCount, 'block')} that this Minecraft version doesn’t have became air.`);
       else if (imageLost) notify('The original image couldn’t be loaded. The blocks are kept.');
@@ -506,6 +533,76 @@ export default function App() {
   };
   const transform = (op: ClipTransform) => editorRef.current?.transform(op);
 
+  // ---- materials ---------------------------------------------------------------------------
+
+  const toggleHighlight = (v: number) => setHighlight((h) => (h === v ? null : v));
+  // Only while the Materials or Build tab is open, and only for a block the art still has.
+  const shownHighlight = highlight !== null && (tab === 'materials' || tab === 'build') && counts.has(highlight) ? highlight : null;
+
+  const canAvoid = (v: number) => settings.enabled.some((id) => id !== BLOCKS[v].id);
+
+  /** Stops using a block: its cells become the nearest allowed block, every other cell stays. */
+  const avoid = (v: number) => {
+    if (!grid) return;
+    const block = BLOCKS[v];
+    const next = { ...settings, enabled: settings.enabled.filter((id) => id !== block.id) };
+    const palette = buildPalette(next);
+    if (palette.length === 0) return;
+    editorRef.current?.commitFloating(); // a floating selection is not on the grid yet
+    const done = avoidBlocks(grid, history, new Set([v]), palette, BLOCKS.map((b) => faceOf(b, orientation).rgb));
+    // It leaves the palette too, so regenerating keeps avoiding it. That is not a reason to call the art outdated.
+    update({ enabled: next.enabled });
+    if (image && keys && lastGen?.base === keys.base) setLastGen({ ...lastGen, base: generationKeys(image.key, next).base });
+    if (done.length === 0) return;
+    onEdit();
+    const { to, count } = done[0];
+    notify(`${block.name} avoided: ${plural(count, 'block')} became ${BLOCKS[to].name}. Ctrl+Z undoes the swap.`);
+  };
+
+  // ---- build mode --------------------------------------------------------------------------
+
+  const steps = useMemo(
+    () => (grid ? makeSteps(stepKind, grid.width, grid.height, orientation) : null),
+    [grid?.width, grid?.height, stepKind, orientation],
+  );
+  // Only worked out while the Build tab is open: it scans the whole art after every edit.
+  const states = useMemo(
+    () => (tab === 'build' && grid && steps ? stepStates(steps, grid, progress) : null),
+    [tab, grid, version, steps, progress],
+  );
+  const building = !!grid && !!steps && !!states;
+  const step = steps && states ? clamp(stepPick ?? Math.max(0, nextOpen(states, -1)), 0, steps.count - 1) : 0;
+  const buildView = useMemo<BuildView | null>(
+    () => (building && steps && states ? { steps, step, built: progress, states, onStep: setStepPick } : null),
+    [building, steps, states, step, progress],
+  );
+
+  const goStep = (delta: number) => steps && setStepPick(clamp(step + delta, 0, steps.count - 1));
+
+  /** Ticks the current step off and moves on to the next one to do, or takes the tick back. */
+  const toggleDone = () => {
+    if (!grid || !steps || !states || states[step] === EMPTY) return;
+    const on = states[step] !== DONE;
+    setBuilt(tickRect(grid, progress, steps.rect(step), on));
+    const next = on ? nextOpen(states, step) : -1;
+    setStepPick(next >= 0 ? next : step);
+    if (on && next < 0) notify('Everything is built.');
+  };
+
+  const changeKind = (kind: StepKind) => {
+    if (!grid || !steps || kind === stepKind) return;
+    // Stay where the build is: the new step that holds the corner this one starts from.
+    const from = originCell(steps.rect(step), orientation);
+    setStepKind(kind);
+    setStepPick(makeSteps(kind, grid.width, grid.height, orientation).at(from.x, from.y));
+  };
+
+  const resetProgress = async () => {
+    if (!(await confirm({ title: 'Clear your build progress?', action: 'Clear', destructive: true }))) return;
+    setBuilt(null);
+    setStepPick(null);
+  };
+
   // Keyboard shortcuts (ignored while typing in a field). Selection keys live in the editor.
   const modeRef = useRef(mode);
   modeRef.current = mode;
@@ -516,6 +613,19 @@ export default function App() {
     if ((e.target as HTMLElement)?.closest?.(typing)) return;
     if (modeRef.current === 'model') return; // the editor's shortcuts don't apply to the 3D view
     const k = e.key.toLowerCase();
+    if (k === 'escape') {
+      if (highlight !== null) setHighlight(null);
+      return;
+    }
+    if (building) {
+      // Nothing is edited while building. [ and ] step like they step the brush size; the arrow keys are no use here,
+      // because a tab or segmented control that was just clicked keeps the focus and takes them.
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (k === '[' || k === ']') goStep(k === ']' ? 1 : -1);
+      else if (k === 'd') toggleDone();
+      else if (k === 'f') setFitSignal((n) => n + 1);
+      return;
+    }
     if ((e.ctrlKey || e.metaKey) && k === 'z') {
       e.preventDefault();
       if (e.shiftKey) redo();
@@ -629,9 +739,10 @@ export default function App() {
             setShowRulers={setShowRulers}
             onFit={() => setFitSignal((n) => n + 1)}
             disabled={!grid}
+            building={building}
           />
           <div className="flex min-h-0 flex-1">
-            <ToolRail tool={tool} setTool={setTool} selection={selection} onTransform={transform} disabled={!grid} />
+            <ToolRail tool={tool} setTool={setTool} selection={selection} onTransform={transform} disabled={!grid || building} />
             <Stage>
               {stale && (
                 <StageBanner>
@@ -659,6 +770,8 @@ export default function App() {
                 fitSignal={fitSignal}
                 overlay={overlayOn ? overlayImg : null}
                 overlayOpacity={overlayOpacity}
+                highlight={shownHighlight}
+                build={buildView}
                 handleRef={editorRef}
                 onEdit={onEdit}
                 onPick={onPick}
@@ -707,7 +820,37 @@ export default function App() {
           tab={tab}
           setTab={setTab}
           blocks={<BlockPalettePanel enabled={enabled} setEnabled={setEnabled} orientation={orientation} />}
-          materials={<MaterialsList counts={counts} orientation={orientation} />}
+          materials={
+            <MaterialsList
+              counts={counts}
+              orientation={orientation}
+              highlight={shownHighlight}
+              onHighlight={toggleHighlight}
+              onAvoid={avoid}
+              canAvoid={canAvoid}
+            />
+          }
+          build={
+            grid && steps && states ? (
+              <BuildPanel
+                grid={grid}
+                version={version}
+                built={progress}
+                steps={steps}
+                states={states}
+                step={step}
+                onStep={setStepPick}
+                onKind={changeKind}
+                orientation={orientation}
+                highlight={shownHighlight}
+                onHighlight={toggleHighlight}
+                onToggle={toggleDone}
+                onReset={() => void resetProgress()}
+              />
+            ) : (
+              <p className="p-4 text-muted-foreground">No blocks yet.</p>
+            )
+          }
           history={
             art.available ? (
               <HistoryPanel list={art.list} currentId={art.currentId} onOpen={(id) => void openArt(id)} onDelete={(id) => void deleteArt(id)} />

@@ -1,4 +1,5 @@
 import { useCallback, useRef } from 'react';
+import type { Built } from '../core/build';
 import type { Grid } from '../core/grid';
 import { encodeGrid, hashGrid } from '../core/serialize';
 import { BLOCKS } from '../data';
@@ -18,12 +19,14 @@ export interface ArtSnapshot {
   edited: boolean;
   hasImage: boolean;
   blockCount: number;
+  /** Build progress that belongs to the grid (see activeBuilt), or null. */
+  built: Built | null;
 }
 
 const STORE: HistoryStore<ArtMeta, Awaited<ReturnType<typeof loadArt>>> = { list: listArts, load: loadArt, remove: deleteArts };
 
-const signature = (s: Pick<ArtSnapshot, 'name' | 'settings' | 'edited'>, grid: Grid) =>
-  `${s.name}|${s.edited}|${settingsSignature(s.settings)}|${grid.width}x${grid.height}:${hashGrid(grid)}`;
+const signature = (s: Pick<ArtSnapshot, 'name' | 'settings' | 'edited'>, grid: Grid, built: Built | null) =>
+  `${s.name}|${s.edited}|${settingsSignature(s.settings)}|${grid.width}x${grid.height}:${hashGrid(grid)}|${built ? hashGrid(built) : 0}`;
 
 /**
  * One history entry per art. Call begin() when a new art starts, adopt() after opening one, schedule() after every
@@ -40,7 +43,7 @@ export function useArtHistory(getSnapshot: () => ArtSnapshot, onError: (message:
     signature: () => {
       const s = snapshotRef.current();
       // Nothing worth keeping until there is an image or a block.
-      return s.grid && (s.hasImage || s.blockCount > 0) ? signature(s, s.grid) : null;
+      return s.grid && (s.hasImage || s.blockCount > 0) ? signature(s, s.grid, s.built) : null;
     },
     save: async (entry) => {
       const snap = snapshotRef.current();
@@ -60,7 +63,8 @@ export function useArtHistory(getSnapshot: () => ArtSnapshot, onError: (message:
         thumb,
       };
       const source = entry.pending ? { id: entry.id, ...entry.pending } : null;
-      await saveArt(meta, { id: entry.id, settings: snap.settings, grid: encoded, edited: snap.edited }, source);
+      const built = snap.built ? encodeGrid(snap.built, BLOCKS) : undefined;
+      await saveArt(meta, { id: entry.id, settings: snap.settings, grid: encoded, edited: snap.edited, built }, source);
       return meta;
     },
   });
@@ -68,7 +72,8 @@ export function useArtHistory(getSnapshot: () => ArtSnapshot, onError: (message:
   const { adopt: adoptRaw } = h;
   /** Makes an opened art current, as saved (so merely opening it doesn't save it again). */
   const adopt = useCallback(
-    (meta: ArtMeta, state: Pick<ArtSnapshot, 'name' | 'settings' | 'edited'>, grid: Grid) => adoptRaw(meta, signature(state, grid)),
+    (meta: ArtMeta, state: Pick<ArtSnapshot, 'name' | 'settings' | 'edited'>, grid: Grid, built: Built | null) =>
+      adoptRaw(meta, signature(state, grid, built)),
     [adoptRaw],
   );
 

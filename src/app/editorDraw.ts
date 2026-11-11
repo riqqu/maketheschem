@@ -21,6 +21,8 @@ export interface Theme {
   rulerText: string;
   rulerLine: string;
   accent: string;
+  /** What blocks fade into when they are not the highlighted ones. */
+  dim: string;
 }
 
 export const RULER_H = 20;
@@ -70,6 +72,24 @@ export function outlineBrush(ctx: CanvasRenderingContext2D, v: View, cx: number,
   ctx.lineWidth = 1;
   ctx.strokeStyle = '#fff';
   ctx.stroke();
+}
+
+/** A tick mark of the given size centred on (cx, cy), white on a dark edge. */
+export function drawCheck(ctx: CanvasRenderingContext2D, cx: number, cy: number, size: number) {
+  ctx.save();
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(cx - size * 0.5, cy + size * 0.02);
+  ctx.lineTo(cx - size * 0.14, cy + size * 0.38);
+  ctx.lineTo(cx + size * 0.5, cy - size * 0.36);
+  ctx.lineWidth = size * 0.2 + 3;
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  ctx.stroke();
+  ctx.lineWidth = size * 0.2;
+  ctx.strokeStyle = '#ffffff';
+  ctx.stroke();
+  ctx.restore();
 }
 
 /** Selection outline: white dashes on a dark line. */

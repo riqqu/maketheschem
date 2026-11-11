@@ -1,27 +1,28 @@
 import { memo, useState } from 'react';
-import { Check, Copy } from 'lucide-react';
+import { Ban, Check, Copy } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { IconButton } from '@/components/icon-button';
 import { Button } from '@/components/ui/button';
 import { BLOCKS } from '../data';
 import type { Orientation } from '../core/types';
-import { BlockSwatch } from './BlockSwatch';
+import { BlockCountRow, stacksText } from './BlockCountRow';
 
 const fmt = new Intl.NumberFormat();
 
-export function stacksText(n: number): string {
-  const stacks = Math.floor(n / 64);
-  const rest = n % 64;
-  if (stacks === 0) return `${rest}`;
-  return rest ? `${stacks} st + ${rest}` : `${stacks} st`;
+interface Props {
+  counts: Map<number, number>;
+  orientation: Orientation;
+  /** Clicking a row highlights that block on the canvas. Without this the list is read-only. */
+  highlight?: number | null;
+  onHighlight?: (value: number) => void;
+  /** Re-matches the block's cells to the nearest allowed block. */
+  onAvoid?: (value: number) => void;
+  /** False when there is no other allowed block to take its place. */
+  canAvoid?: (value: number) => boolean;
 }
 
 /** Shopping list for building the art in survival. */
-export const MaterialsList = memo(function MaterialsList({
-  counts,
-  orientation,
-}: {
-  counts: Map<number, number>;
-  orientation: Orientation;
-}) {
+export const MaterialsList = memo(function MaterialsList({ counts, orientation, highlight, onHighlight, onAvoid, canAvoid }: Props) {
   const [copied, setCopied] = useState(false);
   const rows = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const total = rows.reduce((s, [, n]) => s + n, 0);
@@ -52,12 +53,27 @@ export const MaterialsList = memo(function MaterialsList({
       </div>
       <ul className="pb-2">
         {rows.map(([v, n]) => (
-          <li key={v} className="grid grid-cols-[20px_minmax(0,1fr)_auto_64px] items-center gap-3 px-4 py-1.5 hover:bg-muted/60">
-            <BlockSwatch block={BLOCKS[v]} orientation={orientation} size={20} />
-            <span className="truncate">{BLOCKS[v].name}</span>
-            <span className="text-right font-medium tabular-nums">{fmt.format(n)}</span>
-            <span className="text-right text-xs tabular-nums text-muted-foreground">{stacksText(n)}</span>
-          </li>
+          <BlockCountRow
+            key={v}
+            value={v}
+            count={n}
+            orientation={orientation}
+            pressed={onHighlight ? highlight === v : undefined}
+            onPress={onHighlight && (() => onHighlight(v))}
+            action={
+              onAvoid && (
+                <IconButton
+                  icon={Ban}
+                  label="Avoid this block"
+                  hint="Swaps its blocks for the nearest allowed one"
+                  size="icon-xs"
+                  className={cn('mr-2 ml-1 shrink-0 focus-visible:opacity-100', highlight === v ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}
+                  disabled={canAvoid ? !canAvoid(v) : false}
+                  onClick={() => onAvoid(v)}
+                />
+              )
+            }
+          />
         ))}
       </ul>
     </div>

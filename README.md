@@ -58,8 +58,25 @@ Other Minecraft versions: `npm run extract -- "<path to version jar>"` (add `--l
    The **measure tool** `M` works by dragging between two blocks. It shows the span (e.g. `13 × 6 blocks`, both end blocks
    counted), Δx/Δy and the straight-line distance. Shift keeps the line straight, and the measurement stays visible while
    you paint. `Esc` clears it.
-7. Check the **Materials** tab for a survival shopping list, then click **Export** (top right). The dialog shows the steps
-   for Minecraft after each export:
+7. The **Materials** tab is the survival shopping list, and it is interactive:
+   - Click a block to show only where it goes. Everything else fades on the canvas; click it again or press `Esc` to
+     clear.
+   - The ban icon on a row **avoids** that block (see it on hover, or on the highlighted row). Its blocks become the
+     nearest allowed block, matched the same way as generating, and the block is dropped from the **Blocks** selection so
+     a later regenerate keeps avoiding it. Only those blocks change; the rest of your edits stay, and `Ctrl+Z` undoes
+     the swap. It needs at least one other block enabled.
+8. The **Build** tab plans building it by hand in survival. While it is open the canvas is read-only: chunk lines every
+   16 blocks, counted from the origin corner like the rulers, replace the tens; the current part is lit and the rest
+   fades.
+   - **Rows** are one block row at a time, a wall from the bottom up and a floor from the north edge down.
+     **Sections** cut the art into 16 × 16 squares in the same order, so the ones at the far edges can be smaller.
+   - The panel lists the blocks of the current part with counts and stacks. Click one to highlight it on the canvas.
+   - **Mark done** (`D`) ticks the part off and moves to the next one still to do. `[` and `]` step through the parts,
+     and a click on the canvas picks the one under the cursor. Built blocks are tinted green, and a finished section
+     gets a tick.
+   - Progress is kept per block, so switching between rows and sections keeps it. A block you change after building
+     it counts as to do again. It is saved with the art in the History. **Reset progress** starts over.
+9. Click **Export** (top right). The dialog shows the steps for Minecraft after each export:
    - **.schem** for WorldEdit / FAWE, or **.litematic** for Litematica (in-game hologram and material list);
    - **Commands**: a data pack of vanilla `/fill` and `/setblock` commands that builds it instantly in a creative
      world, no mods (see below);
@@ -146,8 +163,8 @@ measures how noisy each texture is (for **Prefer smooth textures**). When that d
 ## Develop
 
 ```sh
-npm test           # core logic: matching, dithering, grid editing and shapes, NBT, .schem / .litematic, history encoding,
-                   # mesh voxelizing and 3D export, /fill commands and data packs
+npm test           # core logic: matching, dithering, grid editing and shapes, avoiding blocks, build steps and progress,
+                   # NBT, .schem / .litematic, history encoding, mesh voxelizing and 3D export, /fill commands and data packs
 npm run typecheck
 npm run build
 ```

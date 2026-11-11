@@ -33,10 +33,20 @@ export function AppLayout({ modeSwitch, actions, left, main, right }: { modeSwit
   );
 }
 
-export type SideTab = 'blocks' | 'materials' | 'history';
+export type SideTab = 'blocks' | 'materials' | 'build' | 'history';
 
-/** The right sidebar: which blocks to use, what the build needs, and saved builds. */
-export function SideTabs({ tab, setTab, blocks, materials, history }: { tab: SideTab; setTab: (t: SideTab) => void; blocks: ReactNode; materials: ReactNode; history: ReactNode | null }) {
+interface SideTabsProps {
+  tab: SideTab;
+  setTab: (t: SideTab) => void;
+  blocks: ReactNode;
+  materials: ReactNode;
+  /** The plan for building by hand; leave out where there is none. */
+  build?: ReactNode;
+  history: ReactNode | null;
+}
+
+/** The right sidebar: which blocks to use, what the build needs, how to build it, and saved builds. */
+export function SideTabs({ tab, setTab, blocks, materials, build, history }: SideTabsProps) {
   const content = 'mt-0 min-h-0 flex-1 overflow-y-auto max-[900px]:overflow-visible';
   return (
     <Tabs value={tab} onValueChange={(v) => setTab(v as SideTab)} className="min-h-0 flex-1 gap-0">
@@ -47,6 +57,11 @@ export function SideTabs({ tab, setTab, blocks, materials, history }: { tab: Sid
         <TabsTrigger value="materials" className="flex-none px-0">
           Materials
         </TabsTrigger>
+        {build && (
+          <TabsTrigger value="build" className="flex-none px-0">
+            Build
+          </TabsTrigger>
+        )}
         {history && (
           <TabsTrigger value="history" className="flex-none px-0">
             History
@@ -59,6 +74,11 @@ export function SideTabs({ tab, setTab, blocks, materials, history }: { tab: Sid
       <TabsContent value="materials" className={content}>
         {materials}
       </TabsContent>
+      {build && (
+        <TabsContent value="build" className={content}>
+          {build}
+        </TabsContent>
+      )}
       {history && (
         <TabsContent value="history" className={content}>
           {history}
