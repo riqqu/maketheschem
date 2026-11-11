@@ -1,0 +1,49 @@
+# Make the Schem
+
+A browser app that turns images into one-layer Minecraft pixel art and 3D models into builds, then exports `.schem`, `.litematic` or `/fill` commands. Everything runs locally. The README covers features and how users work with the app.
+
+## Commands
+
+```sh
+npm run dev        # http://localhost:5173 (also serves the Minecraft saves API used by "Save to world")
+npm test           # vitest: core logic only
+npm run typecheck
+npm run build      # typecheck + vite build
+```
+
+Run `npm test`, `npm run typecheck` and `npm run build` before every commit.
+
+## Where things go
+
+| Folder | Holds |
+|---|---|
+| `src/core/` | Pure logic: matching, grids, NBT, `.schem`/`.litematic`, commands. No DOM, no React. Tested with vitest. |
+| `src/lib/` | Browser glue: IndexedDB, image/model loading, rendering, `cn()` in `utils.ts`. |
+| `src/worker/` | Web workers for generation and model building. |
+| `src/app/` | The application: `App.tsx` (pixel art), `ModelWorkspace.tsx` (3D), `Layout.tsx` (shared frame), panels and hooks. |
+| `src/components/` | Small app primitives built on shadcn: `Segmented`, `IconButton`, `SliderPopover`, `Field`/`SliderField`/`SwitchField`, `Section`, `Note`, `confirm()`. |
+| `src/components/ui/` | shadcn/ui components. Add new ones with `npx shadcn@latest add <name>`. |
+| `src/styles.css` | Tailwind import and every design token (shadcn tokens plus `--brand`, `--warn`, `--stage`, canvas colours). |
+
+## UI rules
+
+- **Use the primitives.**
+  - Pick one of a few options: `Segmented`.
+  - A number with a wide range in a toolbar (brush size, tolerance): `SliderPopover`.
+  - Icon-only buttons: `IconButton` (label + shortcut in a tooltip, never a `title`).
+  - Labelled controls: `Field`, `SliderField` or `SwitchField`.
+  - Confirmations: `await confirm({...})`, never `window.confirm`.
+  - Transient messages: `toast()` from `sonner`.
+  - Warnings that need action: `Note`.
+- **No helper text.** No taglines, hint paragraphs or secondary labels. If a control needs explaining, put it in a tooltip. If a screen still doesn't make sense, fix the layout instead of adding copy.
+- **Tailwind classes only.** Don't add CSS files or global classes. Theme colours come from tokens (`bg-muted`, `text-muted-foreground`, `text-brand`), never hex values.
+- **Dark mode follows the system** (`prefers-color-scheme`). There is no `.dark` class and no toggle. The canvas reads its colours from CSS variables in `Editor.tsx`, so rename tokens there too.
+- **Icons are `lucide-react`.**
+- **Don't break shortcuts.** Keyboard shortcuts live in `App.tsx` (`keyRef`) and are ignored inside text inputs and dialogs. A new tool needs its key in `TOOL_KEYS` and its `IconButton` `shortcut`.
+- **Tool options** (brush size, rectangle outline, tolerance…) are defined in `src/app/toolOptions.ts` (types, defaults, validation of saved values) and shown per tool in `ToolOptionsBar.tsx`. A new option needs both, and its logic goes in `src/core/` with a test.
+- **Generated components stay generated.** Files in `src/components/ui/` are shadcn output. Local edits so far:
+  - `slider.tsx` forwards `aria-label` to the thumb.
+  - `checkbox.tsx` has an indeterminate state.
+  - `sonner.tsx` uses `theme="system"` instead of next-themes.
+
+  Keep these edits if you re-add those components.

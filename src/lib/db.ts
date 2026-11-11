@@ -23,6 +23,8 @@ export interface ArtData {
   settings: unknown;
   grid: EncodedGrid;
   edited: boolean;
+  /** Blocks ticked off in Build mode (see core/build.ts); absent until something is built. */
+  built?: EncodedGrid;
 }
 
 /** The original image file, written once per art. */

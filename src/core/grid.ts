@@ -1,3 +1,4 @@
+import { brushRows, type BrushShape } from './brush';
 import { AIR } from './types';
 import { countCells } from './volume';
 
@@ -108,22 +109,25 @@ export class History {
   }
 }
 
-/** Cells covered by a square brush of `size` centred on (x, y). */
-export function brushCells(grid: Grid, x: number, y: number, size: number): number[] {
+/** Cells covered by a brush of `size` centred on (x, y), inside the grid. */
+export function brushCells(grid: Grid, x: number, y: number, size: number, shape: BrushShape = 'square'): number[] {
   const out: number[] = [];
-  const lo = -Math.floor((size - 1) / 2);
-  for (let dy = lo; dy < lo + size; dy++) {
-    for (let dx = lo; dx < lo + size; dx++) {
-      const cx = x + dx, cy = y + dy;
-      if (cx >= 0 && cy >= 0 && cx < grid.width && cy < grid.height) out.push(cy * grid.width + cx);
-    }
+  for (const { dy, dx0, dx1 } of brushRows(size, shape)) {
+    const cy = y + dy;
+    if (cy < 0 || cy >= grid.height) continue;
+    const from = Math.max(x + dx0, 0), to = Math.min(x + dx1, grid.width - 1);
+    for (let cx = from; cx <= to; cx++) out.push(cy * grid.width + cx);
   }
   return out;
 }
 
+/** Anything that can set a cell inside an undo step: the History itself, or one that also sets mirrored cells. */
+export type CellSetter = Pick<History, 'set'>;
+
 /** Paints a brush stroke segment from (x0,y0) to (x1,y1) without gaps (Bresenham). */
 export function paintLine(
-  grid: Grid, history: History, x0: number, y0: number, x1: number, y1: number, size: number, value: number,
+  grid: Grid, history: CellSetter, x0: number, y0: number, x1: number, y1: number, size: number, value: number,
+  shape: BrushShape = 'square',
 ): boolean {
   let changed = false;
   const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
@@ -131,7 +135,7 @@ export function paintLine(
   let e = dx + dy;
   let x = x0, y = y0;
   for (;;) {
-    for (const i of brushCells(grid, x, y, size)) changed = history.set(grid, i, value) || changed;
+    for (const i of brushCells(grid, x, y, size, shape)) changed = history.set(grid, i, value) || changed;
     if (x === x1 && y === y1) break;
     const e2 = 2 * e;
     if (e2 >= dy) { e += dy; x += sx; }
@@ -140,39 +144,66 @@ export function paintLine(
   return changed;
 }
 
-/** 4-connected flood fill of the region containing (x, y). Returns the number of cells changed. */
-export function floodFill(grid: Grid, history: History, x: number, y: number, value: number): number {
-  const { width, height, cells } = grid;
-  const target = cells[y * width + x];
-  if (target === value) return 0;
+/** Tells whether a cell counts as the same as the clicked one although it is another block (see similarBlocks). */
+export type Similar = (cell: number, seed: number) => boolean;
+
+export interface FillOptions {
+  /** Also spread across the corners, not only the four sides. */
+  diagonal?: boolean;
+  similar?: Similar;
+}
+
+/** Flood fill of the region containing (x, y). Returns the number of cells changed. */
+export function floodFill(grid: Grid, history: History, x: number, y: number, value: number, opts: FillOptions = {}): number {
+  if (grid.cells[y * grid.width + x] === value && !opts.similar) return 0;
+  const region = regionCells(grid, x, y, opts);
   history.begin();
   let count = 0;
-  const stack = [y * width + x];
-  while (stack.length) {
-    const i = stack.pop()!;
-    if (cells[i] !== target) continue;
-    history.set(grid, i, value);
-    count++;
-    const cx = i % width, cy = (i - cx) / width;
-    if (cx > 0) stack.push(i - 1);
-    if (cx < width - 1) stack.push(i + 1);
-    if (cy > 0) stack.push(i - width);
-    if (cy < height - 1) stack.push(i + width);
-  }
+  for (const i of region) if (history.set(grid, i, value)) count++;
   history.commit(grid);
   return count;
 }
 
-/** Replaces every `from` cell with `to`. Returns the number of cells changed. */
-export function replaceAll(grid: Grid, history: History, from: number, to: number): number {
-  if (from === to) return 0;
+/** Indices of the connected region containing (x, y): what a flood fill from there would cover. */
+export function regionCells(grid: Grid, x: number, y: number, opts: FillOptions = {}): number[] {
+  const { width, height, cells } = grid;
+  const { diagonal = false, similar } = opts;
+  const seed = cells[y * width + x];
+  const inRegion = similar ? (v: number) => v === seed || similar(v, seed) : (v: number) => v === seed;
+  const out: number[] = [];
+  // Mark visited cells instead of relying on the cells' values: a filled cell may still look like the seed.
+  const seen = new Uint8Array(width * height);
+  const stack = [y * width + x];
+  seen[stack[0]] = 1;
+  while (stack.length) {
+    const i = stack.pop()!;
+    out.push(i);
+    const cx = i % width, cy = (i - cx) / width;
+    for (let dy = -1; dy <= 1; dy++) {
+      const ny = cy + dy;
+      if (ny < 0 || ny >= height) continue;
+      for (let dx = -1; dx <= 1; dx++) {
+        if ((dx === 0 && dy === 0) || (!diagonal && dx !== 0 && dy !== 0)) continue;
+        const nx = cx + dx;
+        if (nx < 0 || nx >= width) continue;
+        const n = ny * width + nx;
+        if (seen[n] || !inRegion(cells[n])) continue;
+        seen[n] = 1;
+        stack.push(n);
+      }
+    }
+  }
+  return out;
+}
+
+/** Replaces every `from` cell (and, with `similar`, every block like it) with `to`. Returns the number of cells changed. */
+export function replaceAll(grid: Grid, history: History, from: number, to: number, similar?: Similar): number {
+  if (from === to && !similar) return 0;
   history.begin();
   let count = 0;
   for (let i = 0; i < grid.cells.length; i++) {
-    if (grid.cells[i] === from) {
-      history.set(grid, i, to);
-      count++;
-    }
+    const v = grid.cells[i];
+    if ((v === from || (similar && similar(v, from))) && history.set(grid, i, to)) count++;
   }
   history.commit(grid);
   return count;
