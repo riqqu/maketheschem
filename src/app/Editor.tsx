@@ -517,10 +517,10 @@ export function Editor(props: Props) {
         checkB: get('--checker-b', '#c9cdd5'),
         line: get('--grid-line', 'rgba(0,0,0,0.12)'),
         major: get('--grid-major', 'rgba(0,0,0,0.35)'),
-        rulerBg: get('--panel', '#ffffff'),
-        rulerText: get('--muted', '#646c79'),
-        rulerLine: get('--border-strong', '#c7ccd5'),
-        accent: get('--accent', '#2f7d3c'),
+        rulerBg: get('--background', '#ffffff'),
+        rulerText: get('--muted-foreground', '#737373'),
+        rulerLine: get('--border', '#e5e5e5'),
+        accent: get('--brand', '#2f7d3c'),
       };
       requestDraw();
     };
