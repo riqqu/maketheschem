@@ -314,7 +314,7 @@ export function ModelWorkspace({ active, request, atlas, modeSwitch }: Props) {
                 e.target.value = '';
               }}
             />
-            <div className="grid gap-3">
+            <div className="grid grid-cols-1 gap-3">
               {model && (
                 <div className="flex items-center gap-3">
                   <div className="grid size-14 shrink-0 place-items-center rounded-md border bg-muted text-muted-foreground" aria-hidden="true">
@@ -329,7 +329,7 @@ export function ModelWorkspace({ active, request, atlas, modeSwitch }: Props) {
                 </div>
               )}
               <Button variant="outline" onClick={openFile} disabled={loading}>
-                <Upload /> {loading ? 'Loading…' : model ? 'Change' : 'Open model'}
+                <Upload /> {loading ? 'Loading…' : 'Open model'}
               </Button>
               {model?.warnings.map((w) => (
                 <Note key={w} tone="info">

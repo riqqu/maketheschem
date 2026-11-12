@@ -2,6 +2,7 @@
   "name": "maketheschem",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
   "type": "module",
   "description": "Turn images into one-layer Minecraft pixel art, and 3D models into 3D builds, and export Sponge v3 .schem or .litematic files.",
   "scripts": {

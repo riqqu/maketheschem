@@ -1,6 +1,6 @@
 # Make the Schem
 
-A browser app that turns images into one-layer Minecraft pixel art and 3D models into builds, then exports `.schem`, `.litematic` or `/fill` commands. Everything runs locally. The README covers features and how users work with the app.
+A browser app that turns images into one-layer Minecraft pixel art and 3D models into builds, then exports `.schem`, `.litematic` or `/fill` commands. Everything runs locally. The README is the overview and quick start; `docs/GUIDE.md` is the full user guide (every tool, option and export), so update it when behaviour changes.
 
 ## Commands
 
@@ -47,3 +47,13 @@ Run `npm test`, `npm run typecheck` and `npm run build` before every commit.
   - `sonner.tsx` uses `theme="system"` instead of next-themes.
 
   Keep these edits if you re-add those components.
+
+## Public repo rules
+
+This repo is public and MIT-licensed, so keep out anything we may not redistribute.
+
+- **No Minecraft assets.** `src/data/blocks.json`, `public/atlas.png`, jars, textures and sounds stay git-ignored. Don't paste extracted data or texture images into docs, tests or fixtures.
+- **No third-party images, 3D models or fonts** in the repo. Screenshots and test inputs must be original or CC0.
+- **Credit what isn't ours.** A new dependency, or code copied from elsewhere (shadcn components included), gets an entry in `THIRD_PARTY_NOTICES.md`.
+- **Keep the disclaimer.** Mojang's [Minecraft Usage Guidelines](https://www.minecraft.net/en-us/usage-guidelines) ask for "NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT." on the product, listing and related materials. It is in the README, `THIRD_PARTY_NOTICES.md`, `docs/GUIDE.md` and the `index.html` description; put it on any new doc or page too. Never use "Minecraft" as the project's own name, or Minecraft's logo, fonts or other brand elements.
+- **Never publish a build.** `npm run build` copies `public/atlas.png` into `dist/`. Don't deploy `dist/` (Pages, releases, artifacts) while it holds game textures.

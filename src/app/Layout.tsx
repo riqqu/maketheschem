@@ -1,23 +1,70 @@
 // The app's frame, shared by the pixel art and 3D model workspaces.
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { cn } from '@/lib/utils';
+import { clampSidebar, SIDEBAR_LIMITS, SIDEBAR_MAX_SHARE, type Side } from '../core/sidebar';
+import { resetSidebarWidth, setSidebarWidth, useSidebarWidths, useViewportWidth } from './useSidebarWidths';
 
 function Logo() {
+  return <img src={`${import.meta.env.BASE_URL}logo.svg`} alt="" width={24} height={24} className="size-6 shrink-0" />;
+}
+
+const KEY_STEP = 16;
+
+/** The draggable edge of a sidebar. Arrow keys nudge it, a double click puts it back. Sits over the seam, so it takes no room. */
+function SidebarHandle({ side }: { side: Side }) {
+  const width = clampSidebar(side, useSidebarWidths()[side], useViewportWidth());
+  const { min, max } = SIDEBAR_LIMITS[side];
+  // Dragging the left edge to the right widens the left sidebar; the right sidebar is the other way round.
+  const grow = side === 'left' ? 1 : -1;
   return (
-    <svg width="18" height="18" viewBox="0 0 4 4" aria-hidden="true" shapeRendering="crispEdges">
-      <rect width="2" height="2" fill="#35a7c4" />
-      <rect x="2" width="2" height="2" fill="#f0b020" />
-      <rect y="2" width="2" height="2" fill="#a03030" />
-      <rect x="2" y="2" width="2" height="2" fill="#508030" />
-    </svg>
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={side === 'left' ? 'Resize left sidebar' : 'Resize right sidebar'}
+      aria-valuenow={width}
+      aria-valuemin={min}
+      aria-valuemax={max}
+      tabIndex={0}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }}
+      onPointerMove={(e) => {
+        if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+        const frame = e.currentTarget.parentElement!.getBoundingClientRect();
+        setSidebarWidth(side, side === 'left' ? e.clientX - frame.left : frame.right - e.clientX);
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        const step = (e.shiftKey ? 4 : 1) * KEY_STEP;
+        setSidebarWidth(side, width + (e.key === 'ArrowRight' ? 1 : -1) * grow * step);
+      }}
+      onDoubleClick={() => resetSidebarWidth(side)}
+      className={cn(
+        'absolute top-12 bottom-0 z-20 w-1.5 cursor-col-resize touch-none outline-none max-[900px]:hidden',
+        'after:absolute after:inset-y-0 after:left-1/2 after:w-0.5 after:-translate-x-1/2 after:transition-colors',
+        'hover:after:bg-brand/60 focus-visible:after:bg-brand/60 active:after:bg-brand',
+        side === 'left' ? 'left-[calc(var(--sb-left)-3px)]' : 'right-[calc(var(--sb-right)-3px)]',
+      )}
+    />
   );
 }
 
-/** Top bar, settings on the left, the workspace in the middle and tabs on the right. Stacks on narrow screens. */
+/** Top bar, settings on the left, the workspace in the middle and tabs on the right. The sidebars can be resized. Stacks on narrow screens. */
 export function AppLayout({ modeSwitch, actions, left, main, right }: { modeSwitch: ReactNode; actions?: ReactNode; left: ReactNode; main: ReactNode; right: ReactNode }) {
+  const widths = useSidebarWidths();
+  // The share cap is applied in CSS too, so a window that shrinks after the drag still leaves the middle its room.
+  const cap = `${SIDEBAR_MAX_SHARE * 100}vw`;
+  const style = { '--sb-left': `min(${widths.left}px, ${cap})`, '--sb-right': `min(${widths.right}px, ${cap})` } as CSSProperties;
   return (
-    <div className="grid h-dvh grid-cols-[280px_minmax(0,1fr)_300px] grid-rows-[48px_minmax(0,1fr)] max-[900px]:flex max-[900px]:h-auto max-[900px]:min-h-dvh max-[900px]:flex-col">
+    <div
+      style={style}
+      className="relative grid h-dvh grid-cols-[var(--sb-left)_minmax(0,1fr)_var(--sb-right)] grid-rows-[48px_minmax(0,1fr)] max-[900px]:flex max-[900px]:h-auto max-[900px]:min-h-dvh max-[900px]:flex-col"
+    >
       <header className="col-span-3 grid grid-cols-[1fr_auto_1fr] items-center gap-4 border-b px-4 max-[900px]:h-12">
         <div className="flex items-center gap-2.5 font-semibold">
           <Logo />
@@ -29,6 +76,8 @@ export function AppLayout({ modeSwitch, actions, left, main, right }: { modeSwit
       <aside className="min-h-0 overflow-y-auto border-r max-[900px]:border-r-0">{left}</aside>
       <main className="flex min-h-0 min-w-0 flex-col max-[900px]:h-[75vh] max-[900px]:border-y">{main}</main>
       <aside className="flex min-h-0 flex-col overflow-hidden border-l max-[900px]:overflow-visible max-[900px]:border-l-0">{right}</aside>
+      <SidebarHandle side="left" />
+      <SidebarHandle side="right" />
     </div>
   );
 }

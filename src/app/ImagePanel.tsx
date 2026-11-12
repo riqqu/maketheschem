@@ -14,7 +14,7 @@ interface Props {
 /** The source image: open one, change it, or start a blank canvas. */
 export function ImagePanel({ image, onOpen, onBlank, error }: Props) {
   return (
-    <div className="grid gap-3">
+    <div className="grid grid-cols-1 gap-3">
       {image && (
         <div className="flex items-center gap-3">
           <img className="checkerboard size-14 shrink-0 rounded-md border object-contain" src={image.url} alt="" />
@@ -28,11 +28,11 @@ export function ImagePanel({ image, onOpen, onBlank, error }: Props) {
           </div>
         </div>
       )}
-      <div className="grid grid-cols-2 gap-2">
-        <Button variant="outline" onClick={onOpen}>
-          <ImageUp /> {image ? 'Change' : 'Open image'}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="outline" className="min-w-fit flex-1 basis-0" onClick={onOpen}>
+          <ImageUp /> Open image
         </Button>
-        <Button variant="outline" onClick={onBlank}>
+        <Button variant="outline" className="min-w-fit flex-1 basis-0" onClick={onBlank}>
           <Grid2x2 /> Blank canvas
         </Button>
       </div>

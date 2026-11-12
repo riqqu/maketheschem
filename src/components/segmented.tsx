@@ -39,7 +39,8 @@ export function Segmented<T extends string | number>({
       }}
       aria-label={label}
       disabled={disabled}
-      className={cn('w-full gap-0.5 rounded-lg bg-muted p-0.5', className)}
+      // Concentric corners: the item radius is the group radius minus the p-0.5 gap around it.
+      className={cn('w-full gap-0.5 rounded-lg bg-muted p-0.5 data-[size=sm]:rounded-lg', className)}
     >
       {options.map((o) => {
         const item = (
@@ -47,7 +48,7 @@ export function Segmented<T extends string | number>({
             key={String(o.value)}
             value={String(o.value)}
             disabled={o.disabled}
-            className="h-7 flex-1 rounded-md! px-2 text-[0.8rem] text-muted-foreground hover:bg-transparent hover:text-foreground aria-checked:bg-background aria-checked:text-foreground aria-checked:shadow-sm dark:aria-checked:bg-input/50"
+            className="h-7 flex-1 rounded-[calc(var(--radius-lg)-0.125rem)]! px-2 text-[0.8rem] text-muted-foreground hover:bg-transparent hover:text-foreground aria-checked:bg-background aria-checked:text-foreground aria-checked:shadow-sm dark:aria-checked:bg-input/50"
           >
             {o.label}
           </ToggleGroupItem>
